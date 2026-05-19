@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.dto;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Getter
@@ -20,5 +21,6 @@ public class ScheduleResponse {
     private UUID authorId;
     private String authorNickname;
     private UUID groupId;
+    private List<MemoResponse> taggedMemos;
     private LocalDateTime createdAt;
 }

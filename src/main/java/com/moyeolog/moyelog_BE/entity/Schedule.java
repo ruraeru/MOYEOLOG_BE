@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -39,6 +40,14 @@ public class Schedule {
 
     @Column(name = "group_id", columnDefinition = "BINARY(16)")
     private UUID groupId;
+
+    @ManyToMany
+    @JoinTable(
+        name = "schedule_memos",
+        joinColumns = @JoinColumn(name = "schedule_id"),
+        inverseJoinColumns = @JoinColumn(name = "memo_id")
+    )
+    private List<Memo> taggedMemos;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

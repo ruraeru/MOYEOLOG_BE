@@ -1,17 +1,20 @@
 package com.moyeolog.moyelog_BE.service;
 
+import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.ScheduleRequest;
 import com.moyeolog.moyelog_BE.dto.ScheduleResponse;
-import com.moyeolog.moyelog_BE.entity.GroupMember;
+import com.moyeolog.moyelog_BE.entity.Memo;
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
+import com.moyeolog.moyelog_BE.repository.MemoRepository;
 import com.moyeolog.moyelog_BE.repository.ScheduleRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -23,11 +26,17 @@ public class ScheduleService {
     private final ScheduleRepository scheduleRepository;
     private final UserRepository userRepository;
     private final GroupMemberRepository groupMemberRepository;
+    private final MemoRepository memoRepository;
 
     @Transactional
     public ScheduleResponse createSchedule(UUID userId, ScheduleRequest request) {
         User author = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
+
+        List<Memo> taggedMemos = new ArrayList<>();
+        if (request.getTaggedMemoIds() != null && !request.getTaggedMemoIds().isEmpty()) {
+            taggedMemos = memoRepository.findAllById(request.getTaggedMemoIds());
+        }
 
         Schedule schedule = Schedule.builder()
                 .title(request.getTitle())
@@ -37,6 +46,7 @@ public class ScheduleService {
                 .location(request.getLocation())
                 .author(author)
                 .groupId(request.getGroupId())
+                .taggedMemos(taggedMemos)
                 .build();
 
         Schedule savedSchedule = scheduleRepository.save(schedule);
@@ -48,7 +58,6 @@ public class ScheduleService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        // 유저가 속한 그룹 목록 가져오기
         List<UUID> groupIds = groupMemberRepository.findByUser(user).stream()
                 .map(m -> m.getGroup().getId())
                 .collect(Collectors.toList());
@@ -85,6 +94,16 @@ public class ScheduleService {
     }
 
     private ScheduleResponse convertToResponse(Schedule schedule) {
+        List<MemoResponse> memoResponses = new ArrayList<>();
+        if (schedule.getTaggedMemos() != null) {
+            memoResponses = schedule.getTaggedMemos().stream()
+                .map(m -> MemoResponse.builder()
+                    .id(m.getId())
+                    .title(m.getTitle())
+                    .build())
+                .collect(Collectors.toList());
+        }
+
         return ScheduleResponse.builder()
                 .id(schedule.getId())
                 .title(schedule.getTitle())
@@ -95,6 +114,7 @@ public class ScheduleService {
                 .authorId(schedule.getAuthor().getId())
                 .authorNickname(schedule.getAuthor().getNickname())
                 .groupId(schedule.getGroupId())
+                .taggedMemos(memoResponses)
                 .createdAt(schedule.getCreatedAt())
                 .build();
     }
