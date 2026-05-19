@@ -20,10 +20,17 @@ public class AuthService {
     public AuthSyncResponse syncUser(AuthSyncRequest request) {
         String nickname = request.getNickname();
         if (nickname == null || nickname.trim().isEmpty()) {
-            nickname = "User_" + request.getKakaoId().substring(Math.max(0, request.getKakaoId().length() - 4));
+            nickname = "사용자_" + request.getKakaoId().substring(Math.max(0, request.getKakaoId().length() - 4));
+        }
+
+        String email = request.getEmail();
+        if (email != null && email.trim().isEmpty()) {
+            email = null;
         }
 
         final String finalNickname = nickname;
+        final String finalEmail = email;
+
         User user = userRepository.findByKakaoId(request.getKakaoId())
                 .map(existingUser -> {
                     existingUser.updateProfile(finalNickname, request.getProfileImage());
@@ -31,7 +38,7 @@ public class AuthService {
                 })
                 .orElseGet(() -> userRepository.save(User.builder()
                         .kakaoId(request.getKakaoId())
-                        .email(request.getEmail())
+                        .email(finalEmail)
                         .nickname(finalNickname)
                         .profileImage(request.getProfileImage())
                         .build()));
