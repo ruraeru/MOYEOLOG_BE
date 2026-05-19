@@ -31,17 +31,30 @@ public class AuthService {
         final String finalNickname = nickname;
         final String finalEmail = email;
 
+        // 1. kakaoId로 먼저 찾기
         User user = userRepository.findByKakaoId(request.getKakaoId())
                 .map(existingUser -> {
                     existingUser.updateProfile(finalNickname, request.getProfileImage());
+                    // 이메일이 바뀐 경우 업데이트 (선택 사항)
+                    if (finalEmail != null) {
+                        existingUser.updateEmail(finalEmail);
+                    }
                     return existingUser;
                 })
-                .orElseGet(() -> userRepository.save(User.builder()
-                        .kakaoId(request.getKakaoId())
-                        .email(finalEmail)
-                        .nickname(finalNickname)
-                        .profileImage(request.getProfileImage())
-                        .build()));
+                .orElseGet(() -> {
+                    // 2. kakaoId로 못 찾은 경우, 이메일로 찾기 (이미 다른 kakaoId로 가입된 경우 대비)
+                    if (finalEmail != null) {
+                        return userRepository.findByEmail(finalEmail)
+                                .map(existingUser -> {
+                                    // 기존 유저에 kakaoId 연결 (계정 통합)
+                                    existingUser.updateKakaoId(request.getKakaoId());
+                                    existingUser.updateProfile(finalNickname, request.getProfileImage());
+                                    return existingUser;
+                                })
+                                .orElseGet(() -> createUser(request, finalNickname, finalEmail));
+                    }
+                    return createUser(request, finalNickname, finalEmail);
+                });
 
         String token = jwtProvider.createToken(user.getId().toString());
 
@@ -49,5 +62,14 @@ public class AuthService {
                 .accessToken(token)
                 .user(user)
                 .build();
+    }
+
+    private User createUser(AuthSyncRequest request, String nickname, String email) {
+        return userRepository.save(User.builder()
+                .kakaoId(request.getKakaoId())
+                .email(email)
+                .nickname(nickname)
+                .profileImage(request.getProfileImage())
+                .build());
     }
 }

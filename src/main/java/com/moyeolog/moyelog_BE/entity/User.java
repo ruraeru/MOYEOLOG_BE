@@ -46,4 +46,12 @@ public class User {
         this.nickname = nickname;
         this.profileImage = profileImage;
     }
+
+    public void updateEmail(String email) {
+        this.email = email;
+    }
+
+    public void updateKakaoId(String kakaoId) {
+        this.kakaoId = kakaoId;
+    }
 }
