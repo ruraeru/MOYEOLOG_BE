@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.entity;
 
+import com.moyeolog.moyelog_BE.enums.FriendStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -7,45 +8,39 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "moyeolog_group")
+@Table(name = "friends")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor
 @Builder
-public class Group {
+public class Friend {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     @Column(columnDefinition = "BINARY(16)")
     private UUID id;
 
-    @Column(nullable = false)
-    private String name;
-
-    @Column(columnDefinition = "TEXT")
-    private String description;
-
-    @Column(name = "color_theme")
-    private String colorTheme;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "requester_id", nullable = false)
+    private User requester;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "created_by_id", nullable = false)
-    private User createdBy;
+    @JoinColumn(name = "receiver_id", nullable = false)
+    private User receiver;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private FriendStatus status;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
-    @Column(name = "updated_at")
-    private LocalDateTime updatedAt;
-
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
-        updatedAt = LocalDateTime.now();
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
+    public void accept() {
+        this.status = FriendStatus.ACCEPTED;
     }
 }

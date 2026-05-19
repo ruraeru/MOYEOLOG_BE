@@ -60,6 +60,23 @@ public class GroupService {
                 .collect(Collectors.toList());
     }
 
+    @Transactional(readOnly = true)
+    public GroupResponse getGroup(UUID userId, UUID groupId) {
+        Group group = groupRepository.findById(groupId)
+                .orElseThrow(() -> new RuntimeException("Group not found"));
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // 멤버인지 확인 (보안)
+        groupMemberRepository.findByGroup(group).stream()
+                .filter(m -> m.getUser().getId().equals(userId))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Unauthorized access to group"));
+
+        return convertToResponse(group);
+    }
+
     private GroupResponse convertToResponse(Group group) {
         List<GroupMember> members = groupMemberRepository.findByGroup(group);
         List<String> memberNicknames = members.stream()

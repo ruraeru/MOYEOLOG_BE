@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.controller;
 
 import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
+import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
 import com.moyeolog.moyelog_BE.service.MemoService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -34,6 +35,20 @@ public class MemoController {
     @GetMapping("/{id}")
     public ResponseEntity<MemoResponse> getMemo(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
         return ResponseEntity.ok(memoService.getMemo(UUID.fromString(userId), id));
+    }
+
+    @PostMapping("/{id}/share")
+    public ResponseEntity<Void> share(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestBody MemoShareRequest request) {
+        memoService.shareMemo(UUID.fromString(userId), id, request);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/shared")
+    public ResponseEntity<List<MemoResponse>> getSharedMemos(@AuthenticationPrincipal String userId) {
+        return ResponseEntity.ok(memoService.getSharedMemos(UUID.fromString(userId)));
     }
 
     @DeleteMapping("/{id}")

@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.repository;
 
+import com.moyeolog.moyelog_BE.entity.Group;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.User;
 import org.springframework.data.jpa.repository.JpaRepository;

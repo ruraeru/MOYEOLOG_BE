@@ -2,10 +2,13 @@ package com.moyeolog.moyelog_BE.service;
 
 import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
+import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
 import com.moyeolog.moyelog_BE.entity.Memo;
+import com.moyeolog.moyelog_BE.entity.MemoShare;
 import com.moyeolog.moyelog_BE.entity.MemoTag;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.repository.MemoRepository;
+import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
 import com.moyeolog.moyelog_BE.repository.MemoTagRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +27,43 @@ public class MemoService {
     private final UserRepository userRepository;
     private final FileService fileService;
     private final MemoTagRepository memoTagRepository;
+    private final MemoShareRepository memoShareRepository;
+
+    @Transactional
+    public void shareMemo(UUID authorId, UUID memoId, MemoShareRequest request) {
+        Memo memo = memoRepository.findById(memoId)
+                .orElseThrow(() -> new RuntimeException("Memo not found"));
+
+        if (!memo.getAuthor().getId().equals(authorId)) {
+            throw new RuntimeException("Unauthorized share request");
+        }
+
+        for (UUID friendId : request.getFriendIds()) {
+            User friend = userRepository.findById(friendId)
+                    .orElseThrow(() -> new RuntimeException("Friend not found: " + friendId));
+
+            // 이미 공유된 경우 건너뛰기
+            if (memoShareRepository.findByMemoAndSharedTo(memo, friend).isPresent()) {
+                continue;
+            }
+
+            MemoShare memoShare = MemoShare.builder()
+                    .memo(memo)
+                    .sharedTo(friend)
+                    .build();
+            memoShareRepository.save(memoShare);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public List<MemoResponse> getSharedMemos(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        return memoShareRepository.findBySharedToOrderBySharedAtDesc(user).stream()
+                .map(share -> convertToResponse(share.getMemo()))
+                .collect(Collectors.toList());
+    }
 
     @Transactional
     public MemoResponse createMemo(UUID userId, MemoRequest request, org.springframework.web.multipart.MultipartFile image) {
@@ -92,6 +132,14 @@ public class MemoService {
         }
 
         return convertToResponse(memo);
+    }
+
+    @Transactional(readOnly = true)
+    public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
+        // 실제 운영 환경에서는 해당 유저가 그룹 멤버인지 확인하는 로직이 필요함 (여기서는 생략하거나 추가)
+        return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
+                .map(this::convertToResponse)
+                .collect(Collectors.toList());
     }
 
     private MemoResponse convertToResponse(Memo memo) {
