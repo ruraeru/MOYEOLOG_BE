@@ -12,7 +12,6 @@ import java.util.List;
 public class MemoInsightResponse {
     private String ocrText;
     private String summary;
-    private String emotion;
     private List<String> keywords;
     private LocalDateTime analyzedAt;
 }

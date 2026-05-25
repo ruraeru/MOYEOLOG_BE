@@ -32,10 +32,9 @@ public class GeminiService {
         String prompt = "You are an AI assistant analyzing a user's memo. " +
                 "Analyze the following text and image (if provided). " +
                 "1. OCR: Extract all readable text from the image. If no image, return empty string. " +
-                "2. Summary: Summarize the content (text + OCR) in exactly 3 lines IN KOREAN. " +
-                "3. Emotion: Evaluate the overall emotion as one of: 긍정, 부정, 중립. " +
-                "4. Keywords: Extract up to 5 main keywords IN KOREAN. " +
-                "Return the result STRICTLY as a JSON object with keys: ocrText (string), summary (string), emotion (string), keywords (array of strings). " +
+                "2. Summary: Summarize the content (text + OCR) IN KOREAN in exactly 3 lines. Each line must be a complete sentence. " +
+                "3. Keywords: Extract up to 5 main keywords IN KOREAN. " +
+                "Return the result STRICTLY as a JSON object with keys: ocrText (string), summary (string), keywords (array of strings). " +
                 "Text content: " + (memo.getContent() != null ? memo.getContent() : "");
 
         try {

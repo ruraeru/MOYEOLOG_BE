@@ -162,7 +162,6 @@ public class MemoService {
                     existing.update(
                             (String) analysisResult.get("ocrText"),
                             (String) analysisResult.get("summary"),
-                            (String) analysisResult.get("emotion"),
                             (List<String>) analysisResult.get("keywords")
                     );
                     return existing;
@@ -171,7 +170,6 @@ public class MemoService {
                         .memo(memo)
                         .ocrText((String) analysisResult.get("ocrText"))
                         .summary((String) analysisResult.get("summary"))
-                        .emotion((String) analysisResult.get("emotion"))
                         .keywords((List<String>) analysisResult.get("keywords"))
                         .build());
 
@@ -226,7 +224,6 @@ public class MemoService {
         return MemoInsightResponse.builder()
                 .ocrText(insight.getOcrText())
                 .summary(insight.getSummary())
-                .emotion(insight.getEmotion())
                 .keywords(insight.getKeywords())
                 .analyzedAt(insight.getAnalyzedAt())
                 .build();

@@ -32,9 +32,6 @@ public class MemoAiInsight {
     @Column(columnDefinition = "TEXT")
     private String summary;
 
-    @Column(length = 50)
-    private String emotion;
-
     @Convert(converter = StringListConverter.class)
     @Column(columnDefinition = "JSON")
     private List<String> keywords;
@@ -47,10 +44,9 @@ public class MemoAiInsight {
         analyzedAt = LocalDateTime.now();
     }
 
-    public void update(String ocrText, String summary, String emotion, List<String> keywords) {
+    public void update(String ocrText, String summary, List<String> keywords) {
         this.ocrText = ocrText;
         this.summary = summary;
-        this.emotion = emotion;
         this.keywords = keywords;
         this.analyzedAt = LocalDateTime.now();
     }
