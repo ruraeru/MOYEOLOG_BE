@@ -1,10 +1,12 @@
 package com.moyeolog.moyelog_BE.service;
 
-import com.moyeolog.moyelog_BE.dto.GroupRequest;
-import com.moyeolog.moyelog_BE.dto.GroupResponse;
+import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.entity.Group;
+import com.moyeolog.moyelog_BE.entity.GroupInvitation;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.enums.InvitationStatus;
+import com.moyeolog.moyelog_BE.repository.GroupInvitationRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.GroupRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
@@ -23,6 +25,7 @@ public class GroupService {
     private final GroupRepository groupRepository;
     private final GroupMemberRepository groupMemberRepository;
     private final UserRepository userRepository;
+    private final GroupInvitationRepository groupInvitationRepository;
 
     @Transactional
     public GroupResponse createGroup(UUID userId, GroupRequest request) {
@@ -75,6 +78,93 @@ public class GroupService {
                 .orElseThrow(() -> new RuntimeException("Unauthorized access to group"));
 
         return convertToResponse(group);
+    }
+
+    @Transactional
+    public void inviteMembers(UUID inviterId, UUID groupId, GroupInviteRequest request) {
+        Group group = groupRepository.findById(groupId)
+                .orElseThrow(() -> new RuntimeException("Group not found"));
+        
+        User inviter = userRepository.findById(inviterId)
+                .orElseThrow(() -> new RuntimeException("Inviter not found"));
+
+        // 초대자가 멤버인지 확인
+        groupMemberRepository.findByGroup(group).stream()
+                .filter(m -> m.getUser().getId().equals(inviterId))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Only group members can invite others"));
+
+        for (String email : request.getEmails()) {
+            User invitee = userRepository.findByEmail(email)
+                    .orElseThrow(() -> new RuntimeException("User not found with email: " + email));
+
+            // 이미 멤버인지 확인
+            boolean alreadyMember = groupMemberRepository.findByGroup(group).stream()
+                    .anyMatch(m -> m.getUser().getId().equals(invitee.getId()));
+            
+            if (alreadyMember) continue;
+
+            // 이미 대기 중인 초대 있는지 확인
+            groupInvitationRepository.findByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)
+                    .ifPresent(i -> { throw new RuntimeException("Invitation already pending for " + email); });
+
+            GroupInvitation invitation = GroupInvitation.builder()
+                    .group(group)
+                    .inviter(inviter)
+                    .invitee(invitee)
+                    .status(InvitationStatus.PENDING)
+                    .build();
+            
+            groupInvitationRepository.save(invitation);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public List<GroupInvitationResponse> getMyInvitations(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        return groupInvitationRepository.findByInviteeAndStatus(user, InvitationStatus.PENDING).stream()
+                .map(i -> GroupInvitationResponse.builder()
+                        .id(i.getId())
+                        .groupId(i.getGroup().getId())
+                        .groupName(i.getGroup().getName())
+                        .inviterNickname(i.getInviter().getNickname())
+                        .status(i.getStatus())
+                        .invitedAt(i.getInvitedAt())
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public void acceptInvitation(UUID userId, UUID invitationId) {
+        GroupInvitation invitation = groupInvitationRepository.findById(invitationId)
+                .orElseThrow(() -> new RuntimeException("Invitation not found"));
+
+        if (!invitation.getInvitee().getId().equals(userId)) {
+            throw new RuntimeException("Unauthorized invitation access");
+        }
+
+        invitation.accept();
+        
+        // 멤버로 추가
+        GroupMember member = GroupMember.builder()
+                .group(invitation.getGroup())
+                .user(invitation.getInvitee())
+                .build();
+        groupMemberRepository.save(member);
+    }
+
+    @Transactional
+    public void rejectInvitation(UUID userId, UUID invitationId) {
+        GroupInvitation invitation = groupInvitationRepository.findById(invitationId)
+                .orElseThrow(() -> new RuntimeException("Invitation not found"));
+
+        if (!invitation.getInvitee().getId().equals(userId)) {
+            throw new RuntimeException("Unauthorized invitation access");
+        }
+
+        invitation.reject();
     }
 
     private GroupResponse convertToResponse(Group group) {

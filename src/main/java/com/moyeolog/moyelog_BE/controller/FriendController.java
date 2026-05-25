@@ -22,7 +22,7 @@ public class FriendController {
     public ResponseEntity<Void> sendRequest(
             @AuthenticationPrincipal String userId,
             @RequestBody FriendRequestDto request) {
-        friendService.sendFriendRequest(UUID.fromString(userId), request.getEmail());
+        friendService.sendFriendRequest(UUID.fromString(userId), request.getCustomId());
         return ResponseEntity.ok().build();
     }
 

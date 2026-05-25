@@ -1,9 +1,6 @@
 package com.moyeolog.moyelog_BE.controller;
 
-import com.moyeolog.moyelog_BE.dto.GroupRequest;
-import com.moyeolog.moyelog_BE.dto.GroupResponse;
-import com.moyeolog.moyelog_BE.dto.MemoResponse;
-import com.moyeolog.moyelog_BE.dto.ScheduleResponse;
+import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.service.GroupService;
 import com.moyeolog.moyelog_BE.service.MemoService;
 import com.moyeolog.moyelog_BE.service.ScheduleService;
@@ -50,5 +47,35 @@ public class GroupController {
     public ResponseEntity<List<ScheduleResponse>> getGroupSchedules(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
         // 실제 운영 환경에서는 멤버 여부 확인 로직 권장
         return ResponseEntity.ok(scheduleService.getGroupSchedules(id));
+    }
+
+    @PostMapping("/{id}/invitations")
+    public ResponseEntity<Void> inviteMembers(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestBody GroupInviteRequest request) {
+        groupService.inviteMembers(UUID.fromString(userId), id, request);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/invitations")
+    public ResponseEntity<List<GroupInvitationResponse>> getMyInvitations(@AuthenticationPrincipal String userId) {
+        return ResponseEntity.ok(groupService.getMyInvitations(UUID.fromString(userId)));
+    }
+
+    @PostMapping("/invitations/{invitationId}/accept")
+    public ResponseEntity<Void> acceptInvitation(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID invitationId) {
+        groupService.acceptInvitation(UUID.fromString(userId), invitationId);
+        return ResponseEntity.ok().build();
+    }
+
+    @PostMapping("/invitations/{invitationId}/reject")
+    public ResponseEntity<Void> rejectInvitation(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID invitationId) {
+        groupService.rejectInvitation(UUID.fromString(userId), invitationId);
+        return ResponseEntity.ok().build();
     }
 }

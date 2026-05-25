@@ -19,6 +19,9 @@ public class User {
     @Column(columnDefinition = "BINARY(16)")
     private UUID id;
 
+    @Column(name = "custom_id", unique = true, length = 8)
+    private String customId;
+
     @Column(name = "kakao_id", unique = true, nullable = false)
     private String kakaoId;
 
@@ -53,5 +56,9 @@ public class User {
 
     public void updateKakaoId(String kakaoId) {
         this.kakaoId = kakaoId;
+    }
+
+    public void updateCustomId(String customId) {
+        this.customId = customId;
     }
 }

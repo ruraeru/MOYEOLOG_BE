@@ -22,12 +22,12 @@ public class FriendService {
     private final UserRepository userRepository;
 
     @Transactional
-    public void sendFriendRequest(UUID requesterId, String receiverEmail) {
+    public void sendFriendRequest(UUID requesterId, String receiverCustomId) {
         User requester = userRepository.findById(requesterId)
                 .orElseThrow(() -> new RuntimeException("Requester not found"));
 
-        User receiver = userRepository.findByEmail(receiverEmail)
-                .orElseThrow(() -> new RuntimeException("Receiver not found with email: " + receiverEmail));
+        User receiver = userRepository.findByCustomId(receiverCustomId)
+                .orElseThrow(() -> new RuntimeException("Receiver not found with ID: " + receiverCustomId));
 
         if (requester.getId().equals(receiver.getId())) {
             throw new RuntimeException("Cannot send friend request to yourself");
@@ -97,6 +97,7 @@ public class FriendService {
         return FriendResponse.builder()
                 .id(friend.getId())
                 .userId(other.getId())
+                .customId(other.getCustomId())
                 .nickname(other.getNickname())
                 .email(other.getEmail())
                 .profileImage(other.getProfileImage())
