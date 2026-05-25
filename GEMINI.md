@@ -76,3 +76,12 @@ This file documents the foundational setup, architectural decisions, and deploym
 - **CI/CD:** Implementation of GitHub Actions for automated building and deployment.
 - **Image Persistence:** Integration of Docker Volumes or AWS S3 for persistent image storage.
 - **Security:** Hardening Spring Security and JWT implementation.
+
+---
+
+## 📐 Development Conventions
+
+### Commit Message Rule
+- 모든 커밋 메시지는 **한글**로 작성합니다.
+- `feat:`, `fix:`, `chore:`, `refactor:` 등의 접두어(Prefix)는 영문으로 유지하되, 이후 설명은 한글을 사용합니다.
+  - 예: `feat: 모임 초대 API 구현`, `fix: 404 모델 미정의 오류 수정`
