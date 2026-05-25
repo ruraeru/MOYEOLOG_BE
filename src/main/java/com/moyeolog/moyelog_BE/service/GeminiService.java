@@ -26,7 +26,7 @@ public class GeminiService {
     private final FileService fileService;
     private final ObjectMapper objectMapper;
 
-    private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash:generateContent?key=";
+    private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-3.5-flash:generateContent?key=";
 
     public Map<String, Object> analyzeMemo(Memo memo) {
         String prompt = "You are an AI assistant analyzing a user's memo. " +
