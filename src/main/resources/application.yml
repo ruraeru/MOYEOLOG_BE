@@ -10,7 +10,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/moyeolog?serverTimezone=Asia/Seoul&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: Gamemode1@
+    password: P@$$w0rd
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   jpa:

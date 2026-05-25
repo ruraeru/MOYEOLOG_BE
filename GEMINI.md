@@ -32,31 +32,41 @@ This file documents the foundational setup, architectural decisions, and deploym
   - **Exposed Ports:** 8080 (App) and 3306 (DB) for external access.
   - **Database Name:** Updated from `moyelog` to `moyeolog` as per user request.
 
+### Phase 3: Nginx & SSL (HTTPS)
+- **Nginx:** Added as a reverse proxy to handle incoming traffic on ports 80 and 443.
+- **Let's Encrypt:** Integrated using Certbot for automated SSL certificate issuance and renewal.
+- **Security:** The Spring Boot application (`app` service) is no longer exposed directly to the internet; all traffic must pass through Nginx.
+- **Initialization:** Created `init-letsencrypt.sh` to automate the first-time SSL setup.
+
 ## 3. Deployment Guide
 
-### Running with Docker (Recommended)
-To build and start the entire environment (App + DB):
-```bash
-docker compose up --build -d
-```
+### Running with Docker & Nginx (Recommended)
+1. **Initialize SSL Certificates (First time only):**
+   Ensure you have a bash-compatible environment (like Git Bash on Windows) and run:
+   ```bash
+   chmod +x init-letsencrypt.sh
+   ./init-letsencrypt.sh
+   ```
+   *Note: This script will prompt you to confirm the domain and email.*
 
-To stop and remove containers:
-```bash
-docker compose down
-```
+2. **Start the environment:**
+   ```bash
+   docker compose up -d
+   ```
 
-To reset the database (delete all data and volumes):
-```bash
-docker compose down -v
-```
+3. **Check logs:**
+   ```bash
+   docker compose logs -f
+   ```
 
 ### Running Locally (Development)
-1. Ensure local MySQL is running: `brew services start mysql`.
+1. Ensure local MySQL is running.
 2. Run the application: `./gradlew bootRun`.
-3. Note: Ensure Docker is NOT using port 3306 to avoid conflicts.
+3. Note: Ensure Docker is NOT using port 3306 or 8080 to avoid conflicts.
 
 ## 4. Connection Information (Docker Environment)
-- **API Server:** `http://localhost:8080`
+- **Domain:** `https://moyeolog.kro.kr` (Proxy to `app:8080`)
+- **API Server (Internal):** `http://app:8080`
 - **MySQL Database:** `localhost:3306`
   - **Database Name:** `moyeolog`
   - **Username:** `root`
