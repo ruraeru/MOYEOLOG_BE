@@ -50,25 +50,25 @@ public class MemoController {
         memoService.deleteMemo(UUID.fromString(userId), id);
         return ResponseEntity.noContent().build();
     }
-@PostMapping("/{id}/share")
-public ResponseEntity<Void> share(
-        @AuthenticationPrincipal String userId,
-        @PathVariable UUID id,
-        @RequestBody MemoShareRequest request) {
-    memoService.shareMemo(UUID.fromString(userId), id, request);
-    return ResponseEntity.ok().build();
-}
 
-@PutMapping("/{id}/tags")
-public ResponseEntity<MemoResponse> updateTags(
-        @AuthenticationPrincipal String userId,
-        @PathVariable UUID id,
-        @RequestBody Map<String, List<String>> request) {
-    return ResponseEntity.ok(memoService.updateTags(UUID.fromString(userId), id, request.get("tags")));
-}
+    @PostMapping("/{id}/share")
+    public ResponseEntity<Void> share(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestBody MemoShareRequest request) {
+        memoService.shareMemo(UUID.fromString(userId), id, request);
+        return ResponseEntity.ok().build();
+    }
 
-@PostMapping("/{id}/analyze")
-...
+    @PutMapping("/{id}/tags")
+    public ResponseEntity<MemoResponse> updateTags(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestBody Map<String, List<String>> request) {
+        return ResponseEntity.ok(memoService.updateTags(UUID.fromString(userId), id, request.get("tags")));
+    }
+
+    @PostMapping("/{id}/analyze")
     public ResponseEntity<MemoInsightResponse> analyze(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id) {
