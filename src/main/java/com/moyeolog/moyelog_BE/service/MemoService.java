@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class MemoService {
 
     private final MemoRepository memoRepository;
@@ -145,10 +146,12 @@ public class MemoService {
     @Transactional
     public MemoInsightResponse analyzeMemo(UUID userId, UUID memoId) {
         Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found"));
+                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+
+        log.info("[AI Analyze] Request by User: {}, Memo Author: {}", userId, memo.getAuthor().getId());
 
         if (!memo.getAuthor().getId().equals(userId)) {
-            throw new RuntimeException("Only authors can trigger analysis");
+            throw new RuntimeException("Only authors can trigger analysis. Your ID: " + userId + ", Author ID: " + memo.getAuthor().getId());
         }
 
         Map<String, Object> analysisResult = geminiService.analyzeMemo(memo);
@@ -177,14 +180,19 @@ public class MemoService {
 
     @Transactional(readOnly = true)
     public MemoInsightResponse getMemoInsight(UUID userId, UUID memoId) {
-        Memo memo = memoRepository.findById(memoId).orElseThrow();
-        User user = userRepository.findById(userId).orElseThrow();
+        Memo memo = memoRepository.findById(memoId)
+                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+        
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found: " + userId));
+
+        log.info("[AI Insight] Access by User: {}, Memo Author: {}", userId, memo.getAuthor().getId());
 
         boolean isAuthor = memo.getAuthor().getId().equals(userId);
         boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
 
         if (!isAuthor && !isShared) {
-            throw new RuntimeException("Unauthorized access");
+            throw new RuntimeException("Unauthorized access to insight. Your ID: " + userId + ", Author ID: " + memo.getAuthor().getId());
         }
 
         return memoAiInsightRepository.findById(memoId)
