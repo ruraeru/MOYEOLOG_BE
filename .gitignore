@@ -37,3 +37,6 @@ out/
 .vscode/
 data/
 uploads/
+
+### Application Config ###
+src/main/resources/application.yml

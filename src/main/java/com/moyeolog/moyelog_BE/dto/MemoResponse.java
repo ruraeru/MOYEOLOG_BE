@@ -17,6 +17,7 @@ public class MemoResponse {
     private String imageUrl;
     private UUID groupId;
     private List<String> tags;
+    private MemoInsightResponse insight;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

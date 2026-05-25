@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.controller;
 
+import com.moyeolog.moyelog_BE.dto.MemoInsightResponse;
 import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
@@ -8,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.UUID;
@@ -23,7 +25,7 @@ public class MemoController {
     public ResponseEntity<MemoResponse> create(
             @AuthenticationPrincipal String userId,
             @RequestPart("memo") MemoRequest request,
-            @RequestPart(value = "image", required = false) org.springframework.web.multipart.MultipartFile image) {
+            @RequestPart(value = "image", required = false) MultipartFile image) {
         return ResponseEntity.ok(memoService.createMemo(UUID.fromString(userId), request, image));
     }
 
@@ -32,9 +34,20 @@ public class MemoController {
         return ResponseEntity.ok(memoService.getMyMemos(UUID.fromString(userId)));
     }
 
+    @GetMapping("/shared")
+    public ResponseEntity<List<MemoResponse>> getSharedMemos(@AuthenticationPrincipal String userId) {
+        return ResponseEntity.ok(memoService.getSharedMemos(UUID.fromString(userId)));
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<MemoResponse> getMemo(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
         return ResponseEntity.ok(memoService.getMemo(UUID.fromString(userId), id));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
+        memoService.deleteMemo(UUID.fromString(userId), id);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{id}/share")
@@ -46,14 +59,17 @@ public class MemoController {
         return ResponseEntity.ok().build();
     }
 
-    @GetMapping("/shared")
-    public ResponseEntity<List<MemoResponse>> getSharedMemos(@AuthenticationPrincipal String userId) {
-        return ResponseEntity.ok(memoService.getSharedMemos(UUID.fromString(userId)));
+    @PostMapping("/{id}/analyze")
+    public ResponseEntity<MemoInsightResponse> analyze(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id) {
+        return ResponseEntity.ok(memoService.analyzeMemo(UUID.fromString(userId), id));
     }
 
-    @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
-        memoService.deleteMemo(UUID.fromString(userId), id);
-        return ResponseEntity.noContent().build();
+    @GetMapping("/{id}/insight")
+    public ResponseEntity<MemoInsightResponse> getInsight(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id) {
+        return ResponseEntity.ok(memoService.getMemoInsight(UUID.fromString(userId), id));
     }
 }

@@ -1,21 +1,17 @@
 package com.moyeolog.moyelog_BE.service;
 
+import com.moyeolog.moyelog_BE.dto.MemoInsightResponse;
 import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
-import com.moyeolog.moyelog_BE.entity.Memo;
-import com.moyeolog.moyelog_BE.entity.MemoShare;
-import com.moyeolog.moyelog_BE.entity.MemoTag;
-import com.moyeolog.moyelog_BE.entity.User;
-import com.moyeolog.moyelog_BE.repository.MemoRepository;
-import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
-import com.moyeolog.moyelog_BE.repository.MemoTagRepository;
-import com.moyeolog.moyelog_BE.repository.UserRepository;
+import com.moyeolog.moyelog_BE.entity.*;
+import com.moyeolog.moyelog_BE.repository.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -28,6 +24,8 @@ public class MemoService {
     private final FileService fileService;
     private final MemoTagRepository memoTagRepository;
     private final MemoShareRepository memoShareRepository;
+    private final MemoAiInsightRepository memoAiInsightRepository;
+    private final GeminiService geminiService;
 
     @Transactional
     public void shareMemo(UUID authorId, UUID memoId, MemoShareRequest request) {
@@ -42,7 +40,6 @@ public class MemoService {
             User friend = userRepository.findById(friendId)
                     .orElseThrow(() -> new RuntimeException("Friend not found: " + friendId));
 
-            // 이미 공유된 경우 건너뛰기
             if (memoShareRepository.findByMemoAndSharedTo(memo, friend).isPresent()) {
                 continue;
             }
@@ -86,7 +83,6 @@ public class MemoService {
 
         Memo savedMemo = memoRepository.save(memo);
 
-        // 태그 저장
         if (request.getTags() != null && !request.getTags().isEmpty()) {
             List<MemoTag> tags = request.getTags().stream()
                     .map(tagName -> MemoTag.builder()
@@ -127,7 +123,12 @@ public class MemoService {
         Memo memo = memoRepository.findById(memoId)
                 .orElseThrow(() -> new RuntimeException("Memo not found"));
 
-        if (!memo.getAuthor().getId().equals(userId)) {
+        // 작성자거나 공유받은 유저여야 함
+        User user = userRepository.findById(userId).orElseThrow();
+        boolean isAuthor = memo.getAuthor().getId().equals(userId);
+        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
+        
+        if (!isAuthor && !isShared) {
             throw new RuntimeException("Unauthorized access request");
         }
 
@@ -136,16 +137,68 @@ public class MemoService {
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
-        // 실제 운영 환경에서는 해당 유저가 그룹 멤버인지 확인하는 로직이 필요함 (여기서는 생략하거나 추가)
         return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
                 .map(this::convertToResponse)
                 .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public MemoInsightResponse analyzeMemo(UUID userId, UUID memoId) {
+        Memo memo = memoRepository.findById(memoId)
+                .orElseThrow(() -> new RuntimeException("Memo not found"));
+
+        if (!memo.getAuthor().getId().equals(userId)) {
+            throw new RuntimeException("Only authors can trigger analysis");
+        }
+
+        Map<String, Object> analysisResult = geminiService.analyzeMemo(memo);
+        
+        MemoAiInsight insight = memoAiInsightRepository.findById(memoId)
+                .map(existing -> {
+                    existing.update(
+                            (String) analysisResult.get("ocrText"),
+                            (String) analysisResult.get("summary"),
+                            (String) analysisResult.get("emotion"),
+                            (List<String>) analysisResult.get("keywords")
+                    );
+                    return existing;
+                })
+                .orElseGet(() -> MemoAiInsight.builder()
+                        .memo(memo)
+                        .ocrText((String) analysisResult.get("ocrText"))
+                        .summary((String) analysisResult.get("summary"))
+                        .emotion((String) analysisResult.get("emotion"))
+                        .keywords((List<String>) analysisResult.get("keywords"))
+                        .build());
+
+        MemoAiInsight saved = memoAiInsightRepository.save(insight);
+        return convertToInsightResponse(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public MemoInsightResponse getMemoInsight(UUID userId, UUID memoId) {
+        Memo memo = memoRepository.findById(memoId).orElseThrow();
+        User user = userRepository.findById(userId).orElseThrow();
+
+        boolean isAuthor = memo.getAuthor().getId().equals(userId);
+        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
+
+        if (!isAuthor && !isShared) {
+            throw new RuntimeException("Unauthorized access");
+        }
+
+        return memoAiInsightRepository.findById(memoId)
+                .map(this::convertToInsightResponse)
+                .orElse(null);
     }
 
     private MemoResponse convertToResponse(Memo memo) {
         List<String> tagNames = memoTagRepository.findAllByMemo(memo).stream()
                 .map(MemoTag::getName)
                 .collect(Collectors.toList());
+
+        MemoAiInsight insight = memoAiInsightRepository.findById(memo.getId()).orElse(null);
+        MemoInsightResponse insightResponse = insight != null ? convertToInsightResponse(insight) : null;
 
         return MemoResponse.builder()
                 .id(memo.getId())
@@ -154,8 +207,19 @@ public class MemoService {
                 .imageUrl(memo.getImageUrl())
                 .groupId(memo.getGroupId())
                 .tags(tagNames)
+                .insight(insightResponse)
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
+                .build();
+    }
+
+    private MemoInsightResponse convertToInsightResponse(MemoAiInsight insight) {
+        return MemoInsightResponse.builder()
+                .ocrText(insight.getOcrText())
+                .summary(insight.getSummary())
+                .emotion(insight.getEmotion())
+                .keywords(insight.getKeywords())
+                .analyzedAt(insight.getAnalyzedAt())
                 .build();
     }
 }

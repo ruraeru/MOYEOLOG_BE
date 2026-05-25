@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Base64;
 import java.util.UUID;
 
 @Service
@@ -40,6 +41,26 @@ public class FileService {
             return fileName;
         } catch (IOException e) {
             throw new RuntimeException("Could not store file. Please try again!", e);
+        }
+    }
+
+    public String getFileAsBase64(String imageUrl) {
+        if (imageUrl == null || imageUrl.isEmpty()) return null;
+        
+        // "/uploads/filename.ext" 형태 처리
+        String fileName = imageUrl;
+        if (imageUrl.startsWith("/uploads/")) {
+            fileName = imageUrl.substring(9);
+        }
+
+        try {
+            Path filePath = Paths.get(uploadDir).resolve(fileName);
+            if (!Files.exists(filePath)) return null;
+            
+            byte[] fileContent = Files.readAllBytes(filePath);
+            return Base64.getEncoder().encodeToString(fileContent);
+        } catch (IOException e) {
+            return null;
         }
     }
 }
