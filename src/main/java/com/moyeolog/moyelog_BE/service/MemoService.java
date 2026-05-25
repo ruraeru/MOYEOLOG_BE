@@ -120,6 +120,30 @@ public class MemoService {
         memoRepository.delete(memo);
     }
 
+    @Transactional
+    public MemoResponse updateTags(UUID userId, UUID memoId, List<String> newTags) {
+        Memo memo = memoRepository.findById(memoId)
+                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+
+        if (!memo.getAuthor().getId().equals(userId)) {
+            throw new RuntimeException("Unauthorized update request");
+        }
+
+        memoTagRepository.deleteAllByMemo(memo);
+
+        if (newTags != null && !newTags.isEmpty()) {
+            List<MemoTag> tags = newTags.stream()
+                    .map(tagName -> MemoTag.builder()
+                            .memo(memo)
+                            .name(tagName)
+                            .build())
+                    .collect(Collectors.toList());
+            memoTagRepository.saveAll(tags);
+        }
+
+        return convertToResponse(memo);
+    }
+
     @Transactional(readOnly = true)
     public MemoResponse getMemo(UUID userId, UUID memoId) {
         Memo memo = memoRepository.findById(memoId)
