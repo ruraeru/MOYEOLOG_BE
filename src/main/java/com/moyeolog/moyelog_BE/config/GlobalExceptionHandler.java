@@ -12,9 +12,20 @@ import java.util.Map;
 @ControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+import org.springframework.security.access.AccessDeniedException;
+...
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDeniedException(AccessDeniedException e) {
+        log.error("Access denied: ", e);
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", "Forbidden");
+        body.put("message", "접근 권한이 없습니다: " + e.getMessage());
+        return new ResponseEntity<>(body, HttpStatus.FORBIDDEN);
+    }
 
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntimeException(RuntimeException e) {
+...
         log.error("Runtime exception occurred: ", e);
         Map<String, Object> body = new HashMap<>();
         body.put("error", "Internal Server Error");
