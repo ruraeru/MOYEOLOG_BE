@@ -35,8 +35,8 @@ public class GeminiService {
                 "2. Summary: Summarize the content (text + OCR) in exactly 3 lines IN KOREAN. " +
                 "3. Emotion: Evaluate the overall emotion as one of: 긍정, 부정, 중립. " +
                 "4. Keywords: Extract up to 5 main keywords IN KOREAN. " +
-                "Return the result STRICTLY as a JSON object with keys: ocrText, summary, emotion, keywords (array of strings). " +
-                "Text content: " + memo.getContent();
+                "Return the result STRICTLY as a JSON object with keys: ocrText (string), summary (string), emotion (string), keywords (array of strings). " +
+                "Text content: " + (memo.getContent() != null ? memo.getContent() : "");
 
         try {
             Map<String, Object> requestBody = new HashMap<>();
@@ -52,10 +52,17 @@ public class GeminiService {
             // 2. Image Part (if exists)
             String base64Image = fileService.getFileAsBase64(memo.getImageUrl());
             if (base64Image != null) {
+                log.info("[Gemini] Including image in analysis: {}", memo.getImageUrl());
                 Map<String, Object> imagePart = new HashMap<>();
                 Map<String, Object> inlineData = new HashMap<>();
                 imagePart.put("inline_data", inlineData);
-                inlineData.put("mime_type", "image/png"); // 기본적으로 png로 가정, 필요시 동적 처리 가능
+                
+                String mimeType = "image/png";
+                if (memo.getImageUrl().toLowerCase().endsWith(".jpg") || memo.getImageUrl().toLowerCase().endsWith(".jpeg")) {
+                    mimeType = "image/jpeg";
+                }
+                
+                inlineData.put("mime_type", mimeType);
                 inlineData.put("data", base64Image);
                 parts.add(imagePart);
             }
@@ -68,27 +75,45 @@ public class GeminiService {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
+            log.info("[Gemini] Calling Gemini API for memo: {}", memo.getId());
             String response = restTemplate.postForObject(GEMINI_API_URL + apiKey, entity, String.class);
+            log.info("[Gemini] API Response received successfully");
+            
             return parseGeminiResponse(response);
 
         } catch (Exception e) {
-            log.error("Gemini API call failed", e);
-            throw new RuntimeException("AI 분석에 실패했습니다: " + e.getMessage());
+            log.error("[Gemini] AI 분석 실패: {}", e.getMessage(), e);
+            throw new RuntimeException("AI 분석 중 오류가 발생했습니다: " + e.getMessage());
         }
     }
 
     private Map<String, Object> parseGeminiResponse(String response) throws Exception {
         JsonNode root = objectMapper.readTree(response);
-        String textResponse = root.path("candidates").get(0).path("content").path("parts").get(0).path("text").asText();
         
-        // JSON 부분만 추출 (마크다운 코드 블록 제거)
-        String jsonStr = textResponse;
-        if (textResponse.contains("```json")) {
-            jsonStr = textResponse.substring(textResponse.indexOf("```json") + 7, textResponse.lastIndexOf("```"));
-        } else if (textResponse.contains("```")) {
-            jsonStr = textResponse.substring(textResponse.indexOf("```") + 3, textResponse.lastIndexOf("```"));
+        JsonNode candidates = root.path("candidates");
+        if (candidates.isMissingNode() || candidates.size() == 0) {
+            log.error("[Gemini] No candidates found in response: {}", response);
+            throw new RuntimeException("AI가 응답을 생성하지 못했습니다.");
         }
 
-        return objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        String textResponse = candidates.get(0).path("content").path("parts").get(0).path("text").asText();
+        log.debug("[Gemini] Raw Text Response: {}", textResponse);
+        
+        try {
+            // JSON 부분만 추출 (마크다운 코드 블록 제거)
+            String jsonStr = textResponse.trim();
+            if (jsonStr.contains("```json")) {
+                jsonStr = jsonStr.substring(jsonStr.indexOf("```json") + 7);
+                jsonStr = jsonStr.substring(0, jsonStr.lastIndexOf("```")).trim();
+            } else if (jsonStr.contains("```")) {
+                jsonStr = jsonStr.substring(jsonStr.indexOf("```") + 3);
+                jsonStr = jsonStr.substring(0, jsonStr.lastIndexOf("```")).trim();
+            }
+
+            return objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.error("[Gemini] JSON Parsing Failed. Raw text: {}", textResponse);
+            throw new RuntimeException("AI 응답 형식이 올바르지 않습니다.");
+        }
     }
 }
