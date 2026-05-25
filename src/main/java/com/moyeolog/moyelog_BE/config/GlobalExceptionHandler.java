@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.config;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
@@ -12,8 +13,7 @@ import java.util.Map;
 @ControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
-import org.springframework.security.access.AccessDeniedException;
-...
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Map<String, Object>> handleAccessDeniedException(AccessDeniedException e) {
         log.error("Access denied: ", e);
@@ -25,7 +25,6 @@ import org.springframework.security.access.AccessDeniedException;
 
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntimeException(RuntimeException e) {
-...
         log.error("Runtime exception occurred: ", e);
         Map<String, Object> body = new HashMap<>();
         body.put("error", "Internal Server Error");
