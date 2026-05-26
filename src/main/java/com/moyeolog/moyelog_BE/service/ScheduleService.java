@@ -70,9 +70,9 @@ public class ScheduleService {
 
         List<Schedule> schedules;
         if (groupIds.isEmpty()) {
-            schedules = scheduleRepository.findAllByAuthor(user);
+            schedules = scheduleRepository.findAllByUser(user);
         } else {
-            schedules = scheduleRepository.findByAuthorOrGroupIds(user, groupIds);
+            schedules = scheduleRepository.findByUserOrGroupIds(user, groupIds);
         }
 
         return schedules.stream()

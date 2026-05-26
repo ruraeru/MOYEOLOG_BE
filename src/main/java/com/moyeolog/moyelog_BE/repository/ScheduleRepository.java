@@ -11,10 +11,11 @@ import java.util.UUID;
 
 public interface ScheduleRepository extends JpaRepository<Schedule, UUID> {
     
-    @Query("SELECT s FROM Schedule s WHERE s.author = :author OR s.groupId IN :groupIds")
-    List<Schedule> findByAuthorOrGroupIds(@Param("author") User author, @Param("groupIds") List<UUID> groupIds);
+    @Query("SELECT DISTINCT s FROM Schedule s LEFT JOIN s.participants p WHERE s.author = :user OR s.groupId IN :groupIds OR p = :user")
+    List<Schedule> findByUserOrGroupIds(@Param("user") User user, @Param("groupIds") List<UUID> groupIds);
 
-    List<Schedule> findAllByAuthor(User author);
+    @Query("SELECT DISTINCT s FROM Schedule s LEFT JOIN s.participants p WHERE s.author = :user OR p = :user")
+    List<Schedule> findAllByUser(@Param("user") User user);
 
     List<Schedule> findAllByGroupIdOrderByStartTimeAsc(UUID groupId);
 }
