@@ -17,8 +17,19 @@ public class GroupResponse {
     private String description;
     private String colorTheme;
     private String createdByNickname;
-    private List<String> memberNicknames;
+    private List<MemberResponse> members;
     private String inviteCode;
     private int memberCount;
     private LocalDateTime createdAt;
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class MemberResponse {
+        private UUID id;
+        private String nickname;
+        private String profileImage;
+    }
 }

@@ -211,9 +211,13 @@ public class GroupService {
     }
 
     private GroupResponse convertToResponse(Group group) {
-        List<GroupMember> members = groupMemberRepository.findByGroup(group);
-        List<String> memberNicknames = members.stream()
-                .map(m -> m.getUser().getNickname())
+        List<GroupMember> memberships = groupMemberRepository.findByGroup(group);
+        List<GroupResponse.MemberResponse> memberResponses = memberships.stream()
+                .map(m -> GroupResponse.MemberResponse.builder()
+                        .id(m.getUser().getId())
+                        .nickname(m.getUser().getNickname())
+                        .profileImage(m.getUser().getProfileImage())
+                        .build())
                 .collect(Collectors.toList());
 
         return GroupResponse.builder()
@@ -222,9 +226,9 @@ public class GroupService {
                 .description(group.getDescription())
                 .colorTheme(group.getColorTheme())
                 .createdByNickname(group.getCreatedBy().getNickname())
-                .memberNicknames(memberNicknames)
+                .members(memberResponses)
                 .inviteCode(group.getInviteCode())
-                .memberCount(memberNicknames.size())
+                .memberCount(memberResponses.size())
                 .createdAt(group.getCreatedAt())
                 .build();
     }
