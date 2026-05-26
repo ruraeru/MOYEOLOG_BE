@@ -19,4 +19,5 @@ public class ScheduleRequest {
     private String location;
     private UUID groupId;
     private List<UUID> taggedMemoIds;
+    private List<UUID> participantIds;
 }

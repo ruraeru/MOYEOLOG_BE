@@ -49,6 +49,14 @@ public class Schedule {
     )
     private List<Memo> taggedMemos;
 
+    @ManyToMany
+    @JoinTable(
+        name = "schedule_participants",
+        joinColumns = @JoinColumn(name = "schedule_id"),
+        inverseJoinColumns = @JoinColumn(name = "user_id")
+    )
+    private List<User> participants;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 

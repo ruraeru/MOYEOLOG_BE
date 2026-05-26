@@ -38,6 +38,11 @@ public class ScheduleService {
             taggedMemos = memoRepository.findAllById(request.getTaggedMemoIds());
         }
 
+        List<User> participants = new ArrayList<>();
+        if (request.getParticipantIds() != null && !request.getParticipantIds().isEmpty()) {
+            participants = userRepository.findAllById(request.getParticipantIds());
+        }
+
         Schedule schedule = Schedule.builder()
                 .title(request.getTitle())
                 .description(request.getDescription())
@@ -47,6 +52,7 @@ public class ScheduleService {
                 .author(author)
                 .groupId(request.getGroupId())
                 .taggedMemos(taggedMemos)
+                .participants(participants)
                 .build();
 
         Schedule savedSchedule = scheduleRepository.save(schedule);
@@ -104,6 +110,17 @@ public class ScheduleService {
                 .collect(Collectors.toList());
         }
 
+        List<ScheduleResponse.ParticipantResponse> participantResponses = new ArrayList<>();
+        if (schedule.getParticipants() != null) {
+            participantResponses = schedule.getParticipants().stream()
+                .map(p -> ScheduleResponse.ParticipantResponse.builder()
+                    .id(p.getId())
+                    .nickname(p.getNickname())
+                    .profileImage(p.getProfileImage())
+                    .build())
+                .collect(Collectors.toList());
+        }
+
         return ScheduleResponse.builder()
                 .id(schedule.getId())
                 .title(schedule.getTitle())
@@ -115,6 +132,7 @@ public class ScheduleService {
                 .authorNickname(schedule.getAuthor().getNickname())
                 .groupId(schedule.getGroupId())
                 .taggedMemos(memoResponses)
+                .participants(participantResponses)
                 .createdAt(schedule.getCreatedAt())
                 .build();
     }

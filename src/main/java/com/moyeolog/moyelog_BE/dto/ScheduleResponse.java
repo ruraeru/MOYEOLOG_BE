@@ -22,5 +22,17 @@ public class ScheduleResponse {
     private String authorNickname;
     private UUID groupId;
     private List<MemoResponse> taggedMemos;
+    private List<ParticipantResponse> participants;
     private LocalDateTime createdAt;
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class ParticipantResponse {
+        private UUID id;
+        private String nickname;
+        private String profileImage;
+    }
 }
