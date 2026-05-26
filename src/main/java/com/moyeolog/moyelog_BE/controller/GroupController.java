@@ -38,6 +38,16 @@ public class GroupController {
         return ResponseEntity.ok(groupService.getGroup(UUID.fromString(userId), id));
     }
 
+    @PutMapping(value = "/{id}", consumes = {"multipart/form-data"})
+    public ResponseEntity<GroupResponse> update(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestPart("group") GroupRequest request,
+            @RequestPart(value = "image", required = false) org.springframework.web.multipart.MultipartFile image,
+            @RequestPart(value = "bgImage", required = false) org.springframework.web.multipart.MultipartFile bgImage) {
+        return ResponseEntity.ok(groupService.updateGroup(UUID.fromString(userId), id, request, image, bgImage));
+    }
+
     @GetMapping("/{id}/memos")
     public ResponseEntity<List<MemoResponse>> getGroupMemos(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
         return ResponseEntity.ok(memoService.getGroupMemos(UUID.fromString(userId), id));

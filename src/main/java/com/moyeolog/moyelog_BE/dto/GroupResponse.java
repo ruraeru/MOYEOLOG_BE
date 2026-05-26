@@ -19,6 +19,8 @@ public class GroupResponse {
     private String createdByNickname;
     private List<MemberResponse> members;
     private String inviteCode;
+    private String profileImage;
+    private String backgroundImage;
     private int memberCount;
     private LocalDateTime createdAt;
 

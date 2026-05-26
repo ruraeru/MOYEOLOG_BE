@@ -9,6 +9,7 @@ import java.util.UUID;
 @Entity
 @Table(name = "moyeolog_group")
 @Getter
+@Setter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor
 @Builder
@@ -30,6 +31,12 @@ public class Group {
 
     @Column(name = "invite_code", unique = true, length = 6)
     private String inviteCode;
+
+    @Column(name = "profile_image")
+    private String profileImage;
+
+    @Column(name = "background_image")
+    private String backgroundImage;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "created_by_id", nullable = false)

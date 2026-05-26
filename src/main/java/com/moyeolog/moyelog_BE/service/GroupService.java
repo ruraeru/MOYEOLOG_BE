@@ -27,6 +27,7 @@ public class GroupService {
     private final GroupMemberRepository groupMemberRepository;
     private final UserRepository userRepository;
     private final GroupInvitationRepository groupInvitationRepository;
+    private final FileService fileService;
 
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     private static final int CODE_LENGTH = 6;
@@ -100,7 +101,7 @@ public class GroupService {
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
         List<GroupMember> memberships = groupMemberRepository.findByUser(user);
-        
+
         return memberships.stream()
                 .map(membership -> convertToResponse(membership.getGroup()))
                 .collect(Collectors.toList());
@@ -127,7 +128,7 @@ public class GroupService {
     public void inviteMembers(UUID inviterId, UUID groupId, GroupInviteRequest request) {
         Group group = groupRepository.findById(groupId)
                 .orElseThrow(() -> new RuntimeException("Group not found"));
-        
+
         User inviter = userRepository.findById(inviterId)
                 .orElseThrow(() -> new RuntimeException("Inviter not found"));
 
@@ -144,12 +145,14 @@ public class GroupService {
             // 이미 멤버인지 확인
             boolean alreadyMember = groupMemberRepository.findByGroup(group).stream()
                     .anyMatch(m -> m.getUser().getId().equals(invitee.getId()));
-            
+
             if (alreadyMember) continue;
 
             // 이미 대기 중인 초대 있는지 확인
             groupInvitationRepository.findByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)
-                    .ifPresent(i -> { throw new RuntimeException("Invitation already pending for " + email); });
+                    .ifPresent(i -> {
+                        throw new RuntimeException("Invitation already pending for " + email);
+                    });
 
             GroupInvitation invitation = GroupInvitation.builder()
                     .group(group)
@@ -157,7 +160,7 @@ public class GroupService {
                     .invitee(invitee)
                     .status(InvitationStatus.PENDING)
                     .build();
-            
+
             groupInvitationRepository.save(invitation);
         }
     }
@@ -189,7 +192,7 @@ public class GroupService {
         }
 
         invitation.accept();
-        
+
         // 멤버로 추가
         GroupMember member = GroupMember.builder()
                 .group(invitation.getGroup())
@@ -206,11 +209,40 @@ public class GroupService {
         if (!invitation.getInvitee().getId().equals(userId)) {
             throw new RuntimeException("Unauthorized invitation access");
         }
-
-        invitation.reject();
     }
 
-    private GroupResponse convertToResponse(Group group) {
+    @Transactional
+    public GroupResponse updateGroup(UUID userId, UUID groupId, GroupRequest request,
+                                     org.springframework.web.multipart.MultipartFile image,
+                                     org.springframework.web.multipart.MultipartFile bgImage) {
+        Group group = groupRepository.findById(groupId)
+                .orElseThrow(() -> new RuntimeException("Group not found"));
+
+        // 멤버인지 확인
+        boolean isMember = groupMemberRepository.findByGroup(group).stream()
+                .anyMatch(m -> m.getUser().getId().equals(userId));
+
+        if (!isMember) {
+            throw new RuntimeException("Unauthorized to update group info");
+        }
+
+        if (request.getName() != null) group.setName(request.getName());
+        if (request.getDescription() != null) group.setDescription(request.getDescription());
+        if (request.getColorTheme() != null) group.setColorTheme(request.getColorTheme());
+
+        if (image != null && !image.isEmpty()) {
+            group.setProfileImage("/uploads/" + fileService.storeFile(image));
+        }
+
+        if (bgImage != null && !bgImage.isEmpty()) {
+            group.setBackgroundImage("/uploads/" + fileService.storeFile(bgImage));
+        }
+
+        return convertToResponse(group);
+    }
+
+    @Transactional(readOnly = true)
+    protected GroupResponse convertToResponse(Group group) {
         List<GroupMember> memberships = groupMemberRepository.findByGroup(group);
         List<GroupResponse.MemberResponse> memberResponses = memberships.stream()
                 .map(m -> GroupResponse.MemberResponse.builder()
@@ -228,6 +260,8 @@ public class GroupService {
                 .createdByNickname(group.getCreatedBy().getNickname())
                 .members(memberResponses)
                 .inviteCode(group.getInviteCode())
+                .profileImage(group.getProfileImage())
+                .backgroundImage(group.getBackgroundImage())
                 .memberCount(memberResponses.size())
                 .createdAt(group.getCreatedAt())
                 .build();
