@@ -18,6 +18,7 @@ public class GroupResponse {
     private String colorTheme;
     private String createdByNickname;
     private List<String> memberNicknames;
+    private String inviteCode;
     private int memberCount;
     private LocalDateTime createdAt;
 }

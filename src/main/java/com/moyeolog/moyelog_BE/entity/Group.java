@@ -28,6 +28,9 @@ public class Group {
     @Column(name = "color_theme")
     private String colorTheme;
 
+    @Column(name = "invite_code", unique = true, length = 6)
+    private String inviteCode;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "created_by_id", nullable = false)
     private User createdBy;

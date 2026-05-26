@@ -14,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -27,15 +28,22 @@ public class GroupService {
     private final UserRepository userRepository;
     private final GroupInvitationRepository groupInvitationRepository;
 
+    private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    private static final int CODE_LENGTH = 6;
+    private final SecureRandom random = new SecureRandom();
+
     @Transactional
     public GroupResponse createGroup(UUID userId, GroupRequest request) {
         User creator = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
+        String inviteCode = generateUniqueInviteCode();
+
         Group group = Group.builder()
                 .name(request.getName())
                 .description(request.getDescription())
                 .colorTheme(request.getColorTheme())
+                .inviteCode(inviteCode)
                 .createdBy(creator)
                 .build();
 
@@ -49,6 +57,41 @@ public class GroupService {
         groupMemberRepository.save(member);
 
         return convertToResponse(savedGroup);
+    }
+
+    private String generateUniqueInviteCode() {
+        String code;
+        do {
+            StringBuilder sb = new StringBuilder(CODE_LENGTH);
+            for (int i = 0; i < CODE_LENGTH; i++) {
+                sb.append(CHARACTERS.charAt(random.nextInt(CHARACTERS.length())));
+            }
+            code = sb.toString();
+        } while (groupRepository.findByInviteCode(code).isPresent());
+        return code;
+    }
+
+    @Transactional
+    public void joinGroupByCode(UUID userId, String inviteCode) {
+        Group group = groupRepository.findByInviteCode(inviteCode.toUpperCase())
+                .orElseThrow(() -> new RuntimeException("Invalid invite code"));
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // 이미 멤버인지 확인
+        boolean alreadyMember = groupMemberRepository.findByGroup(group).stream()
+                .anyMatch(m -> m.getUser().getId().equals(userId));
+
+        if (alreadyMember) {
+            throw new RuntimeException("Already a member of this group");
+        }
+
+        GroupMember member = GroupMember.builder()
+                .group(group)
+                .user(user)
+                .build();
+        groupMemberRepository.save(member);
     }
 
     @Transactional(readOnly = true)
@@ -180,6 +223,7 @@ public class GroupService {
                 .colorTheme(group.getColorTheme())
                 .createdByNickname(group.getCreatedBy().getNickname())
                 .memberNicknames(memberNicknames)
+                .inviteCode(group.getInviteCode())
                 .memberCount(memberNicknames.size())
                 .createdAt(group.getCreatedAt())
                 .build();

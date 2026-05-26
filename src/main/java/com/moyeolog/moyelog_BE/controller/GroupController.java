@@ -49,6 +49,14 @@ public class GroupController {
         return ResponseEntity.ok(scheduleService.getGroupSchedules(id));
     }
 
+    @PostMapping("/join")
+    public ResponseEntity<Void> joinByCode(
+            @AuthenticationPrincipal String userId,
+            @RequestParam String code) {
+        groupService.joinGroupByCode(UUID.fromString(userId), code);
+        return ResponseEntity.ok().build();
+    }
+
     @PostMapping("/{id}/invitations")
     public ResponseEntity<Void> inviteMembers(
             @AuthenticationPrincipal String userId,
