@@ -30,6 +30,15 @@ public class MemoController {
         return ResponseEntity.ok(memoService.createMemo(UUID.fromString(userId), request, image));
     }
 
+    @PutMapping(value = "/{id}", consumes = {"multipart/form-data"})
+    public ResponseEntity<MemoResponse> update(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestPart("memo") MemoRequest request,
+            @RequestPart(value = "image", required = false) MultipartFile image) {
+        return ResponseEntity.ok(memoService.updateMemo(UUID.fromString(userId), id, request, image));
+    }
+
     @GetMapping
     public ResponseEntity<List<MemoResponse>> getMyMemos(@AuthenticationPrincipal String userId) {
         return ResponseEntity.ok(memoService.getMyMemos(UUID.fromString(userId)));

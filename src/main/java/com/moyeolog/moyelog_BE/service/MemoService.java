@@ -144,6 +144,37 @@ public class MemoService {
         return convertToResponse(memo);
     }
 
+    @Transactional
+    public MemoResponse updateMemo(UUID userId, UUID memoId, MemoRequest request, org.springframework.web.multipart.MultipartFile image) {
+        Memo memo = memoRepository.findById(memoId)
+                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+
+        if (!memo.getAuthor().getId().equals(userId)) {
+            throw new RuntimeException("Unauthorized update request");
+        }
+
+        String imageUrl = memo.getImageUrl();
+        if (image != null && !image.isEmpty()) {
+            imageUrl = "/uploads/" + fileService.storeFile(image);
+        }
+
+        memo.update(request.getTitle(), request.getContent(), imageUrl);
+
+        // 태그 업데이트
+        memoTagRepository.deleteAllByMemo(memo);
+        if (request.getTags() != null && !request.getTags().isEmpty()) {
+            List<MemoTag> tags = request.getTags().stream()
+                    .map(tagName -> MemoTag.builder()
+                            .memo(memo)
+                            .name(tagName)
+                            .build())
+                    .collect(Collectors.toList());
+            memoTagRepository.saveAll(tags);
+        }
+
+        return convertToResponse(memo);
+    }
+
     @Transactional(readOnly = true)
     public MemoResponse getMemo(UUID userId, UUID memoId) {
         Memo memo = memoRepository.findById(memoId)
