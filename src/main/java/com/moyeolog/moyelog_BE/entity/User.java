@@ -9,6 +9,7 @@ import java.util.UUID;
 @Entity
 @Table(name = "users")
 @Getter
+@Setter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor
 @Builder
@@ -48,6 +49,10 @@ public class User {
     public void updateProfile(String nickname, String profileImage) {
         this.nickname = nickname;
         this.profileImage = profileImage;
+    }
+
+    public void updateBio(String bio) {
+        this.bio = bio;
     }
 
     public void updateEmail(String email) {
