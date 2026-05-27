@@ -38,16 +38,19 @@ public class AuthService {
         // 1. kakaoId로 먼저 찾기
         User user = userRepository.findByKakaoId(request.getKakaoId())
                 .map(existingUser -> {
-                    existingUser.updateProfile(finalNickname, request.getProfileImage());
-                    // 이메일이 바뀐 경우 업데이트 (선택 사항)
-                    if (finalEmail != null) {
+                    // 기존 사용자는 카카오 정보로 덮어쓰지 않고, 이메일/CustomID 등 누락된 정보만 보완
+                    if (existingUser.getNickname() == null || existingUser.getNickname().isEmpty()) {
+                        existingUser.setNickname(finalNickname);
+                    }
+                    // 프로필 이미지도 명시적으로 설정된 것이 없을 때만 카카오 정보 사용 (옵션)
+                    if (existingUser.getProfileImage() == null || existingUser.getProfileImage().isEmpty()) {
+                        existingUser.setProfileImage(request.getProfileImage());
+                    }
+                    
+                    if (finalEmail != null && existingUser.getEmail() == null) {
                         existingUser.updateEmail(finalEmail);
                     }
-                    // 기존 유저인데 customId가 없는 경우 부여
                     if (existingUser.getCustomId() == null) {
-                        // Setter가 없으므로 Reflection이나 Builder 등으로 처리해야 하지만, 
-                        // 간단하게 update 메서드를 User 엔티티에 추가하거나 여기서 필드 주입 방식을 고려
-                        // 여기서는 User 엔티티에 updateCustomId 메서드를 추가했다고 가정하고 호출 (잠시 후 User 엔티티 수정 예정)
                         existingUser.updateCustomId(generateUniqueCustomId());
                     }
                     return existingUser;
@@ -59,7 +62,7 @@ public class AuthService {
                                 .map(existingUser -> {
                                     // 기존 유저에 kakaoId 연결 (계정 통합)
                                     existingUser.updateKakaoId(request.getKakaoId());
-                                    existingUser.updateProfile(finalNickname, request.getProfileImage());
+                                    // 닉네임/이미지는 기존 것 유지 (생략 가능)
                                     if (existingUser.getCustomId() == null) {
                                         existingUser.updateCustomId(generateUniqueCustomId());
                                     }
