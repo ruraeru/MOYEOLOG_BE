@@ -6,11 +6,13 @@ import com.moyeolog.moyelog_BE.enums.FriendStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+@Repository
 public interface FriendRepository extends JpaRepository<Friend, UUID> {
     
     // 수락된 친구 목록 (내가 신청했거나 받았거나)

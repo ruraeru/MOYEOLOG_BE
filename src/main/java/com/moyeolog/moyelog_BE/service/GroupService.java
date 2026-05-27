@@ -11,10 +11,12 @@ import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.GroupRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -22,7 +24,6 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class GroupService {
-
     private final GroupRepository groupRepository;
     private final GroupMemberRepository groupMemberRepository;
     private final UserRepository userRepository;
@@ -31,7 +32,7 @@ public class GroupService {
 
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     private static final int CODE_LENGTH = 6;
-    private final SecureRandom random = new SecureRandom();
+    private static final SecureRandom random = new SecureRandom();
 
     @Transactional
     public GroupResponse createGroup(UUID userId, GroupRequest request) {
@@ -209,6 +210,8 @@ public class GroupService {
         if (!invitation.getInvitee().getId().equals(userId)) {
             throw new RuntimeException("Unauthorized invitation access");
         }
+
+        invitation.reject();
     }
 
     @Transactional
