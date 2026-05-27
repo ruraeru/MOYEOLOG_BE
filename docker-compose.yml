@@ -9,8 +9,8 @@ services:
       MYSQL_PASSWORD: rootpassword
     ports:
       - "3306:3306"
-    # [추가된 부분] MySQL 데이터 저장 경로를 외부 볼륨과 연결합니다.
     volumes:
+      # MySQL 데이터를 안전하게 보관하는 볼륨
       - db_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -29,6 +29,10 @@ services:
       - SPRING_DATASOURCE_PASSWORD=rootpassword
       - SPRING_JPA_HIBERNATE_DDL_AUTO=update
     restart: always
+    volumes:
+      # 앱에서 업로드한 이미지 파일을 안전하게 보관하는 볼륨
+      # 주의: '/app/uploads' 부분을 실제 Spring Boot 코드가 이미지를 저장하는 경로로 반드시 수정해야 합니다.
+      - app_images:/app/uploads
 
   nginx:
     image: nginx:1.25-alpine
@@ -54,6 +58,7 @@ services:
       - ./data/certbot/www:/var/www/certbot
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
-# [추가된 부분] 파일 최하단에 도커 볼륨을 선언해 줍니다.
+# 최하단에 도커 볼륨 선언
 volumes:
   db_data:
+  app_images:
