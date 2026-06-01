@@ -38,6 +38,11 @@ This file documents the foundational setup, architectural decisions, and deploym
 - **Security:** The Spring Boot application (`app` service) is no longer exposed directly to the internet; all traffic must pass through Nginx.
 - **Initialization:** Created `init-letsencrypt.sh` to automate the first-time SSL setup.
 
+### Phase 4: Feature Enhancements
+- **Schedule Update:**
+- Implemented `PUT /api/schedules/{id}` for schedule modification.
+- Added strict author validation in `ScheduleService` to ensure only owners can update or delete schedules.
+
 ## 3. Deployment Guide
 
 ### Running with Docker & Nginx (Recommended)

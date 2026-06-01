@@ -99,6 +99,38 @@ public class ScheduleService {
         scheduleRepository.delete(schedule);
     }
 
+    @Transactional
+    public ScheduleResponse updateSchedule(UUID userId, UUID scheduleId, ScheduleRequest request) {
+        Schedule schedule = scheduleRepository.findById(scheduleId)
+                .orElseThrow(() -> new RuntimeException("Schedule not found"));
+
+        if (!schedule.getAuthor().getId().equals(userId)) {
+            throw new RuntimeException("Unauthorized update request");
+        }
+
+        List<Memo> taggedMemos = new ArrayList<>();
+        if (request.getTaggedMemoIds() != null && !request.getTaggedMemoIds().isEmpty()) {
+            taggedMemos = memoRepository.findAllById(request.getTaggedMemoIds());
+        }
+
+        List<User> participants = new ArrayList<>();
+        if (request.getParticipantIds() != null && !request.getParticipantIds().isEmpty()) {
+            participants = userRepository.findAllById(request.getParticipantIds());
+        }
+
+        schedule.update(
+                request.getTitle(),
+                request.getDescription(),
+                request.getStartTime(),
+                request.getEndTime(),
+                request.getLocation(),
+                taggedMemos,
+                participants
+        );
+
+        return convertToResponse(schedule);
+    }
+
     private ScheduleResponse convertToResponse(Schedule schedule) {
         List<MemoResponse> memoResponses = new ArrayList<>();
         if (schedule.getTaggedMemos() != null) {

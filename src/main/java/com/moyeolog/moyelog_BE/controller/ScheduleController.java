@@ -30,6 +30,14 @@ public class ScheduleController {
         return ResponseEntity.ok(scheduleService.getSchedules(UUID.fromString(userId)));
     }
 
+    @PutMapping("/{id}")
+    public ResponseEntity<ScheduleResponse> update(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @RequestBody ScheduleRequest request) {
+        return ResponseEntity.ok(scheduleService.updateSchedule(UUID.fromString(userId), id, request));
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(
             @AuthenticationPrincipal String userId,

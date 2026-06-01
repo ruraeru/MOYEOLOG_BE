@@ -63,6 +63,16 @@ public class Schedule {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    public void update(String title, String description, LocalDateTime startTime, LocalDateTime endTime, String location, List<Memo> taggedMemos, List<User> participants) {
+        this.title = title;
+        this.description = description;
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.location = location;
+        this.taggedMemos = taggedMemos;
+        this.participants = participants;
+    }
+
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
