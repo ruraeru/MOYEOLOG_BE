@@ -287,7 +287,7 @@ public class MemoService {
                 .groupId(memo.getGroupId())
                 .tags(tagNames)
                 .insight(insightResponse)
-                .isFavorite(memo.isFavorite())
+                .isFavorite(memo.getIsFavorite() != null && memo.getIsFavorite())
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
                 .build();

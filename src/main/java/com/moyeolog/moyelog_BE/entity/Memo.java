@@ -36,7 +36,7 @@ public class Memo {
 
     @Column(name = "is_favorite")
     @Builder.Default
-    private boolean isFavorite = false;
+    private Boolean isFavorite = false;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -48,6 +48,7 @@ public class Memo {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
+        if (isFavorite == null) isFavorite = false;
     }
 
     @PreUpdate
@@ -62,6 +63,10 @@ public class Memo {
     }
 
     public void toggleFavorite() {
-        this.isFavorite = !this.isFavorite;
+        if (this.isFavorite == null) {
+            this.isFavorite = true;
+        } else {
+            this.isFavorite = !this.isFavorite;
+        }
     }
 }

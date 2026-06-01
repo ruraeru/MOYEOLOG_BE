@@ -18,7 +18,7 @@ public class MemoResponse {
     private UUID groupId;
     private List<String> tags;
     private MemoInsightResponse insight;
-    private boolean isFavorite;
+    private Boolean isFavorite;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
