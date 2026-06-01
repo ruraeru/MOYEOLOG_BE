@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moyeolog.moyelog_BE.entity.GroupTopic;
 import com.moyeolog.moyelog_BE.entity.Memo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,18 +30,26 @@ public class GeminiService {
     private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent?key=";
 
     public Map<String, Object> analyzeMemo(Memo memo) {
-        String prompt = "You are an AI assistant analyzing a user's memo. " +
+        return analyze(memo.getContent(), memo.getImageUrl(), memo.getId().toString());
+    }
+
+    public Map<String, Object> analyzeTopic(GroupTopic topic) {
+        return analyze(topic.getContent(), topic.getImageUrl(), topic.getId().toString());
+    }
+
+    private Map<String, Object> analyze(String content, String imageUrl, String id) {
+        String prompt = "You are an AI assistant analyzing a user's memo or topic. " +
                 "Analyze the following text and image (if provided). " +
                 "1. OCR: Extract all readable text from the image. If no image, return empty string. " +
                 "2. Summary: Summarize the content (text + OCR) IN KOREAN in exactly 3 lines. Each line must be a complete sentence. " +
                 "3. Keywords: Extract up to 5 main keywords IN KOREAN. " +
                 "Return the result STRICTLY as a JSON object with keys: ocrText (string), summary (string), keywords (array of strings). " +
-                "Text content: " + (memo.getContent() != null ? memo.getContent() : "");
+                "Text content: " + (content != null ? content : "");
 
         try {
             Map<String, Object> requestBody = new HashMap<>();
             List<Map<String, Object>> contents = new ArrayList<>();
-            Map<String, Object> content = new HashMap<>();
+            Map<String, Object> reqContent = new HashMap<>();
             List<Map<String, Object>> parts = new ArrayList<>();
 
             // 1. Text Part
@@ -49,15 +58,15 @@ public class GeminiService {
             parts.add(textPart);
 
             // 2. Image Part (if exists)
-            String base64Image = fileService.getFileAsBase64(memo.getImageUrl());
+            String base64Image = fileService.getFileAsBase64(imageUrl);
             if (base64Image != null) {
-                log.info("[Gemini] Including image in analysis: {}", memo.getImageUrl());
+                log.info("[Gemini] Including image in analysis: {}", imageUrl);
                 Map<String, Object> imagePart = new HashMap<>();
                 Map<String, Object> inlineData = new HashMap<>();
                 imagePart.put("inline_data", inlineData);
                 
                 String mimeType = "image/png";
-                if (memo.getImageUrl().toLowerCase().endsWith(".jpg") || memo.getImageUrl().toLowerCase().endsWith(".jpeg")) {
+                if (imageUrl.toLowerCase().endsWith(".jpg") || imageUrl.toLowerCase().endsWith(".jpeg")) {
                     mimeType = "image/jpeg";
                 }
                 
@@ -66,8 +75,8 @@ public class GeminiService {
                 parts.add(imagePart);
             }
 
-            content.put("parts", parts);
-            contents.add(content);
+            reqContent.put("parts", parts);
+            contents.add(reqContent);
             requestBody.put("contents", contents);
 
             HttpHeaders headers = new HttpHeaders();
@@ -80,7 +89,7 @@ public class GeminiService {
             String response = null;
             for (int attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
-                    log.info("[Gemini] Calling Gemini API for memo: {} (Attempt {}/{})", memo.getId(), attempt, maxRetries);
+                    log.info("[Gemini] Calling Gemini API for ID: {} (Attempt {}/{})", id, attempt, maxRetries);
                     response = restTemplate.postForObject(GEMINI_API_URL + apiKey, entity, String.class);
                     log.info("[Gemini] API Response received successfully");
                     break; // Success, exit retry loop
