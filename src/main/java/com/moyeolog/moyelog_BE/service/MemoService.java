@@ -254,6 +254,23 @@ public class MemoService {
                 .orElse(null);
     }
 
+    @Transactional
+    public MemoResponse toggleFavorite(UUID userId, UUID memoId) {
+        Memo memo = memoRepository.findById(memoId)
+                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+
+        User user = userRepository.findById(userId).orElseThrow();
+        boolean isAuthor = memo.getAuthor().getId().equals(userId);
+        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
+
+        if (!isAuthor && !isShared) {
+            throw new RuntimeException("Unauthorized favorite request");
+        }
+
+        memo.toggleFavorite();
+        return convertToResponse(memo);
+    }
+
     private MemoResponse convertToResponse(Memo memo) {
         List<String> tagNames = memoTagRepository.findAllByMemo(memo).stream()
                 .map(MemoTag::getName)
@@ -270,6 +287,7 @@ public class MemoService {
                 .groupId(memo.getGroupId())
                 .tags(tagNames)
                 .insight(insightResponse)
+                .isFavorite(memo.isFavorite())
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
                 .build();

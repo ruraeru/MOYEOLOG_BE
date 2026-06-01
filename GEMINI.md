@@ -40,8 +40,11 @@ This file documents the foundational setup, architectural decisions, and deploym
 
 ### Phase 4: Feature Enhancements
 - **Schedule Update:**
-- Implemented `PUT /api/schedules/{id}` for schedule modification.
-- Added strict author validation in `ScheduleService` to ensure only owners can update or delete schedules.
+  - Implemented `PUT /api/schedules/{id}` for schedule modification.
+  - Added strict author validation in `ScheduleService` to ensure only owners can update or delete schedules.
+- **Memo Favorites:**
+  - Added `isFavorite` field to `Memo` entity and updated `MemoResponse` DTO.
+  - Implemented `PUT /api/memos/{id}/favorite` endpoint to toggle favorite status.
 
 ## 3. Deployment Guide
 

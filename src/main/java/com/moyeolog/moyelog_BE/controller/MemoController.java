@@ -69,6 +69,13 @@ public class MemoController {
         return ResponseEntity.ok().build();
     }
 
+    @PutMapping("/{id}/favorite")
+    public ResponseEntity<MemoResponse> toggleFavorite(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id) {
+        return ResponseEntity.ok(memoService.toggleFavorite(UUID.fromString(userId), id));
+    }
+
     @PutMapping("/{id}/tags")
     public ResponseEntity<MemoResponse> updateTags(
             @AuthenticationPrincipal String userId,

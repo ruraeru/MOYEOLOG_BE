@@ -34,6 +34,10 @@ public class Memo {
     @Column(name = "image_url", columnDefinition = "LONGTEXT")
     private String imageUrl;
 
+    @Column(name = "is_favorite")
+    @Builder.Default
+    private boolean isFavorite = false;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
@@ -55,5 +59,9 @@ public class Memo {
         this.title = title;
         this.content = content;
         this.imageUrl = imageUrl;
+    }
+
+    public void toggleFavorite() {
+        this.isFavorite = !this.isFavorite;
     }
 }
