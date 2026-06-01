@@ -74,9 +74,35 @@ public class GeminiService {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
-            log.info("[Gemini] Calling Gemini API for memo: {}", memo.getId());
-            String response = restTemplate.postForObject(GEMINI_API_URL + apiKey, entity, String.class);
-            log.info("[Gemini] API Response received successfully");
+            int maxRetries = 3;
+            long waitTime = 2000; // Start with 2 seconds
+
+            String response = null;
+            for (int attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    log.info("[Gemini] Calling Gemini API for memo: {} (Attempt {}/{})", memo.getId(), attempt, maxRetries);
+                    response = restTemplate.postForObject(GEMINI_API_URL + apiKey, entity, String.class);
+                    log.info("[Gemini] API Response received successfully");
+                    break; // Success, exit retry loop
+                } catch (org.springframework.web.client.HttpStatusCodeException e) {
+                    int statusCode = e.getStatusCode().value();
+                    if (statusCode == 503 || statusCode == 429) {
+                        log.warn("[Gemini] API temporarily unavailable or rate limited ({}). Retrying in {}ms...", statusCode, waitTime);
+                        if (attempt == maxRetries) {
+                            throw e; // Rethrow if max retries reached
+                        }
+                        try {
+                            Thread.sleep(waitTime);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException("Retry interrupted", ie);
+                        }
+                        waitTime *= 2; // Exponential backoff (2s -> 4s -> 8s)
+                    } else {
+                        throw e; // Do not retry for other HTTP errors (like 400 Bad Request)
+                    }
+                }
+            }
             
             return parseGeminiResponse(response);
 
