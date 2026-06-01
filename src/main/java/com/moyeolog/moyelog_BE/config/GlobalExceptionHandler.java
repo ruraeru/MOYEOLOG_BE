@@ -1,5 +1,4 @@
-package com.moyeolog.moyelog_BE.config;
-
+import com.moyeolog.moyelog_BE.exception.MoyeologException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +12,15 @@ import java.util.Map;
 @ControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(MoyeologException.class)
+    public ResponseEntity<Map<String, Object>> handleMoyeologException(MoyeologException e) {
+        log.error("Moyeolog exception: status={}, message={}", e.getStatus(), e.getMessage());
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", e.getStatus().getReasonPhrase());
+        body.put("message", e.getMessage());
+        return new ResponseEntity<>(body, e.getStatus());
+    }
 
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Map<String, Object>> handleAccessDeniedException(AccessDeniedException e) {

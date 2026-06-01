@@ -5,17 +5,24 @@ import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
 import com.moyeolog.moyelog_BE.entity.*;
+import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
+import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * 메모 비즈니스 로직을 처리하는 서비스 클래스입니다.
+ * GEMINI.md 표준에 따라 리팩토링되었습니다.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -29,35 +36,19 @@ public class MemoService {
     private final MemoAiInsightRepository memoAiInsightRepository;
     private final GeminiService geminiService;
 
+    // ─── 공개 메서드 (API) ──────────────────────────────────────────
+
     @Transactional
     public void shareMemo(UUID authorId, UUID memoId, MemoShareRequest request) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found"));
+        Memo memo = findMemoById(memoId);
+        validateAuthor(memo, authorId);
 
-        if (!memo.getAuthor().getId().equals(authorId)) {
-            throw new RuntimeException("Unauthorized share request");
-        }
-
-        for (UUID friendId : request.getFriendIds()) {
-            User friend = userRepository.findById(friendId)
-                    .orElseThrow(() -> new RuntimeException("Friend not found: " + friendId));
-
-            if (memoShareRepository.findByMemoAndSharedTo(memo, friend).isPresent()) {
-                continue;
-            }
-
-            MemoShare memoShare = MemoShare.builder()
-                    .memo(memo)
-                    .sharedTo(friend)
-                    .build();
-            memoShareRepository.save(memoShare);
-        }
+        request.getFriendIds().forEach(friendId -> shareWithFriend(memo, friendId));
     }
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getSharedMemos(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = findUserById(userId);
 
         return memoShareRepository.findBySharedToOrderBySharedAtDesc(user).stream()
                 .map(share -> convertToResponse(share.getMemo()))
@@ -65,15 +56,9 @@ public class MemoService {
     }
 
     @Transactional
-    public MemoResponse createMemo(UUID userId, MemoRequest request, org.springframework.web.multipart.MultipartFile image) {
-        User author = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        String imageUrl = null;
-        if (image != null && !image.isEmpty()) {
-            String fileName = fileService.storeFile(image);
-            imageUrl = "/uploads/" + fileName;
-        }
+    public MemoResponse createMemo(UUID userId, MemoRequest request, MultipartFile image) {
+        User author = findUserById(userId);
+        String imageUrl = handleImageUpload(image, null);
 
         Memo memo = Memo.builder()
                 .author(author)
@@ -84,24 +69,14 @@ public class MemoService {
                 .build();
 
         Memo savedMemo = memoRepository.save(memo);
-
-        if (request.getTags() != null && !request.getTags().isEmpty()) {
-            List<MemoTag> tags = request.getTags().stream()
-                    .map(tagName -> MemoTag.builder()
-                            .memo(savedMemo)
-                            .name(tagName)
-                            .build())
-                    .collect(Collectors.toList());
-            memoTagRepository.saveAll(tags);
-        }
+        saveTags(savedMemo, request.getTags());
 
         return convertToResponse(savedMemo);
     }
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getMyMemos(UUID userId) {
-        User author = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User author = findUserById(userId);
 
         return memoRepository.findAllByAuthorOrderByCreatedAtDesc(author).stream()
                 .map(this::convertToResponse)
@@ -110,90 +85,46 @@ public class MemoService {
 
     @Transactional
     public void deleteMemo(UUID userId, UUID memoId) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found"));
-
-        if (!memo.getAuthor().getId().equals(userId)) {
-            throw new RuntimeException("Unauthorized delete request");
-        }
-
+        Memo memo = findMemoById(memoId);
+        validateAuthor(memo, userId);
         memoRepository.delete(memo);
     }
 
     @Transactional
     public MemoResponse updateTags(UUID userId, UUID memoId, List<String> newTags) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
-
-        if (!memo.getAuthor().getId().equals(userId)) {
-            throw new RuntimeException("Unauthorized update request");
-        }
+        Memo memo = findMemoById(memoId);
+        validateAuthor(memo, userId);
 
         memoTagRepository.deleteAllByMemo(memo);
-
-        if (newTags != null && !newTags.isEmpty()) {
-            List<MemoTag> tags = newTags.stream()
-                    .map(tagName -> MemoTag.builder()
-                            .memo(memo)
-                            .name(tagName)
-                            .build())
-                    .collect(Collectors.toList());
-            memoTagRepository.saveAll(tags);
-        }
+        saveTags(memo, newTags);
 
         return convertToResponse(memo);
     }
 
     @Transactional
-    public MemoResponse updateMemo(UUID userId, UUID memoId, MemoRequest request, org.springframework.web.multipart.MultipartFile image) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+    public MemoResponse updateMemo(UUID userId, UUID memoId, MemoRequest request, MultipartFile image) {
+        Memo memo = findMemoById(memoId);
+        validateAuthor(memo, userId);
 
-        if (!memo.getAuthor().getId().equals(userId)) {
-            throw new RuntimeException("Unauthorized update request");
-        }
-
-        String imageUrl = memo.getImageUrl();
-        if (image != null && !image.isEmpty()) {
-            imageUrl = "/uploads/" + fileService.storeFile(image);
-        }
-
+        String imageUrl = handleImageUpload(image, memo.getImageUrl());
         memo.update(request.getTitle(), request.getContent(), imageUrl);
 
-        // 태그 업데이트
         memoTagRepository.deleteAllByMemo(memo);
-        if (request.getTags() != null && !request.getTags().isEmpty()) {
-            List<MemoTag> tags = request.getTags().stream()
-                    .map(tagName -> MemoTag.builder()
-                            .memo(memo)
-                            .name(tagName)
-                            .build())
-                    .collect(Collectors.toList());
-            memoTagRepository.saveAll(tags);
-        }
+        saveTags(memo, request.getTags());
 
         return convertToResponse(memo);
     }
 
     @Transactional(readOnly = true)
     public MemoResponse getMemo(UUID userId, UUID memoId) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found"));
-
-        // 작성자거나 공유받은 유저여야 함
-        User user = userRepository.findById(userId).orElseThrow();
-        boolean isAuthor = memo.getAuthor().getId().equals(userId);
-        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
-        
-        if (!isAuthor && !isShared) {
-            throw new RuntimeException("Unauthorized access request");
-        }
-
+        Memo memo = findMemoById(memoId);
+        validateAccess(memo, userId);
         return convertToResponse(memo);
     }
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
+        // 그룹 메모 접근 권한 체크 필요 시 여기에 추가 가능
         return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
                 .map(this::convertToResponse)
                 .collect(Collectors.toList());
@@ -201,53 +132,20 @@ public class MemoService {
 
     @Transactional
     public MemoInsightResponse analyzeMemo(UUID userId, UUID memoId) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
+        Memo memo = findMemoById(memoId);
+        validateAuthor(memo, userId);
 
-        log.info("[AI Analyze] Request by User: {}, Memo Author: {}", userId, memo.getAuthor().getId());
-
-        if (!memo.getAuthor().getId().equals(userId)) {
-            throw new RuntimeException("Only authors can trigger analysis. Your ID: " + userId + ", Author ID: " + memo.getAuthor().getId());
-        }
-
+        log.info("[AI Analyze] Request for Memo: {}", memoId);
         Map<String, Object> analysisResult = geminiService.analyzeMemo(memo);
         
-        MemoAiInsight insight = memoAiInsightRepository.findById(memoId)
-                .map(existing -> {
-                    existing.update(
-                            (String) analysisResult.get("ocrText"),
-                            (String) analysisResult.get("summary"),
-                            (List<String>) analysisResult.get("keywords")
-                    );
-                    return existing;
-                })
-                .orElseGet(() -> MemoAiInsight.builder()
-                        .memo(memo)
-                        .ocrText((String) analysisResult.get("ocrText"))
-                        .summary((String) analysisResult.get("summary"))
-                        .keywords((List<String>) analysisResult.get("keywords"))
-                        .build());
-
-        MemoAiInsight saved = memoAiInsightRepository.save(insight);
-        return convertToInsightResponse(saved);
+        MemoAiInsight insight = updateOrCreateInfo(memo, analysisResult);
+        return convertToInsightResponse(memoAiInsightRepository.save(insight));
     }
 
     @Transactional(readOnly = true)
     public MemoInsightResponse getMemoInsight(UUID userId, UUID memoId) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
-        
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found: " + userId));
-
-        log.info("[AI Insight] Access by User: {}, Memo Author: {}", userId, memo.getAuthor().getId());
-
-        boolean isAuthor = memo.getAuthor().getId().equals(userId);
-        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
-
-        if (!isAuthor && !isShared) {
-            throw new RuntimeException("Unauthorized access to insight. Your ID: " + userId + ", Author ID: " + memo.getAuthor().getId());
-        }
+        Memo memo = findMemoById(memoId);
+        validateAccess(memo, userId);
 
         return memoAiInsightRepository.findById(memoId)
                 .map(this::convertToInsightResponse)
@@ -256,37 +154,105 @@ public class MemoService {
 
     @Transactional
     public MemoResponse toggleFavorite(UUID userId, UUID memoId) {
-        Memo memo = memoRepository.findById(memoId)
-                .orElseThrow(() -> new RuntimeException("Memo not found: " + memoId));
-
-        User user = userRepository.findById(userId).orElseThrow();
-        boolean isAuthor = memo.getAuthor().getId().equals(userId);
-        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
-
-        if (!isAuthor && !isShared) {
-            throw new RuntimeException("Unauthorized favorite request");
-        }
+        Memo memo = findMemoById(memoId);
+        validateAccess(memo, userId);
 
         memo.toggleFavorite();
         return convertToResponse(memo);
     }
 
+    // ─── 내부 헬퍼 메서드 (분리 및 최적화) ──────────────────────────
+
+    private void shareWithFriend(Memo memo, UUID friendId) {
+        User friend = findUserById(friendId);
+
+        if (memoShareRepository.findByMemoAndSharedTo(memo, friend).isEmpty()) {
+            MemoShare memoShare = MemoShare.builder()
+                    .memo(memo)
+                    .sharedTo(friend)
+                    .build();
+            memoShareRepository.save(memoShare);
+        }
+    }
+
+    private User findUserById(UUID userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+    }
+
+    private Memo findMemoById(UUID memoId) {
+        return memoRepository.findById(memoId)
+                .orElseThrow(() -> new ResourceNotFoundException("메모", memoId));
+    }
+
+    private void validateAuthor(Memo memo, UUID userId) {
+        if (!memo.getAuthor().getId().equals(userId)) {
+            throw new UnauthorizedAccessException("해당 메모에 대한 권한이 없습니다. (작성자 전용)");
+        }
+    }
+
+    private void validateAccess(Memo memo, UUID userId) {
+        User user = findUserById(userId);
+        boolean isAuthor = memo.getAuthor().getId().equals(userId);
+        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
+
+        if (!isAuthor && !isShared) {
+            throw new UnauthorizedAccessException("해당 메모에 접근할 수 있는 권한이 없습니다.");
+        }
+    }
+
+    private String handleImageUpload(MultipartFile image, String currentImageUrl) {
+        if (image == null || image.isEmpty()) {
+            return currentImageUrl;
+        }
+        return "/uploads/" + fileService.storeFile(image);
+    }
+
+    private void saveTags(Memo memo, List<String> tagNames) {
+        if (tagNames == null || tagNames.isEmpty()) return;
+
+        List<MemoTag> tags = tagNames.stream()
+                .map(name -> MemoTag.builder()
+                        .memo(memo)
+                        .name(name)
+                        .build())
+                .collect(Collectors.toList());
+        memoTagRepository.saveAll(tags);
+    }
+
+    private MemoAiInsight updateOrCreateInfo(Memo memo, Map<String, Object> result) {
+        return memoAiInsightRepository.findById(memo.getId())
+                .map(existing -> {
+                    existing.update(
+                            (String) result.get("ocrText"),
+                            (String) result.get("summary"),
+                            (List<String>) result.get("keywords")
+                    );
+                    return existing;
+                })
+                .orElseGet(() -> MemoAiInsight.builder()
+                        .memo(memo)
+                        .ocrText((String) result.get("ocrText"))
+                        .summary((String) result.get("summary"))
+                        .keywords((List<String>) result.get("keywords"))
+                        .build());
+    }
+
     private MemoResponse convertToResponse(Memo memo) {
-        List<String> tagNames = memoTagRepository.findAllByMemo(memo).stream()
+        List<String> tags = memoTagRepository.findAllByMemo(memo).stream()
                 .map(MemoTag::getName)
                 .collect(Collectors.toList());
 
         MemoAiInsight insight = memoAiInsightRepository.findById(memo.getId()).orElse(null);
-        MemoInsightResponse insightResponse = insight != null ? convertToInsightResponse(insight) : null;
-
+        
         return MemoResponse.builder()
                 .id(memo.getId())
                 .title(memo.getTitle())
                 .content(memo.getContent())
                 .imageUrl(memo.getImageUrl())
                 .groupId(memo.getGroupId())
-                .tags(tagNames)
-                .insight(insightResponse)
+                .tags(tags)
+                .insight(insight != null ? convertToInsightResponse(insight) : null)
                 .isFavorite(memo.getIsFavorite() != null && memo.getIsFavorite())
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
