@@ -199,6 +199,7 @@ public class GroupTopicService {
                 .authorId(topic.getAuthor().getId())
                 .authorNickname(topic.getAuthor().getNickname())
                 .authorProfileImage(topic.getAuthor().getProfileImage())
+                .groupId(topic.getGroup().getId())
                 .commentCount(commentCount)
                 .createdAt(topic.getCreatedAt())
                 .updatedAt(topic.getUpdatedAt())

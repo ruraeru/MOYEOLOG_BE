@@ -18,6 +18,7 @@ public class GroupTopicResponse {
     private UUID authorId;
     private String authorNickname;
     private String authorProfileImage;
+    private UUID groupId;
     private int commentCount;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
