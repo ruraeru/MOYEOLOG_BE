@@ -106,10 +106,11 @@ public class MemoService {
     @Transactional
     public MemoResponse updateMemo(UUID userId, UUID memoId, MemoRequest request, MultipartFile image) {
         Memo memo = findMemoById(memoId);
-        validateAuthor(memo, userId);
+        validateAccess(memo, userId);
+        User modifier = findUserById(userId);
 
         String imageUrl = handleImageUpload(image, memo.getImageUrl());
-        memo.update(request.getTitle(), request.getContent(), imageUrl);
+        memo.update(request.getTitle(), request.getContent(), imageUrl, modifier);
 
         memoTagRepository.deleteAllByMemo(memo);
         saveTags(memo, request.getTags());
@@ -262,6 +263,11 @@ public class MemoService {
                 .title(memo.getTitle())
                 .content(memo.getContent())
                 .imageUrl(memo.getImageUrl())
+                .authorId(memo.getAuthor().getId())
+                .authorNickname(memo.getAuthor().getNickname())
+                .authorProfileImage(memo.getAuthor().getProfileImage())
+                .lastModifierId(memo.getLastModifier() != null ? memo.getLastModifier().getId() : null)
+                .lastModifierNickname(memo.getLastModifier() != null ? memo.getLastModifier().getNickname() : null)
                 .groupId(memo.getGroupId())
                 .tags(tags)
                 .insight(insight != null ? convertToInsightResponse(insight) : null)

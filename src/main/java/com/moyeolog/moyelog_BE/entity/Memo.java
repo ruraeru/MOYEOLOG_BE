@@ -22,6 +22,10 @@ public class Memo {
     @JoinColumn(name = "author_id", nullable = false)
     private User author;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "last_modifier_id")
+    private User lastModifier;
+
     @Column(name = "group_id", columnDefinition = "BINARY(16)")
     private UUID groupId; // 특정 모임에 속할 경우
 
@@ -56,10 +60,11 @@ public class Memo {
         updatedAt = LocalDateTime.now();
     }
 
-    public void update(String title, String content, String imageUrl) {
+    public void update(String title, String content, String imageUrl, User modifier) {
         this.title = title;
         this.content = content;
         this.imageUrl = imageUrl;
+        this.lastModifier = modifier;
     }
 
     public void toggleFavorite() {

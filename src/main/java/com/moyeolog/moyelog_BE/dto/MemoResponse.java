@@ -15,6 +15,11 @@ public class MemoResponse {
     private String title;
     private String content;
     private String imageUrl;
+    private UUID authorId;
+    private String authorNickname;
+    private String authorProfileImage;
+    private UUID lastModifierId;
+    private String lastModifierNickname;
     private UUID groupId;
     private List<String> tags;
     private MemoInsightResponse insight;
