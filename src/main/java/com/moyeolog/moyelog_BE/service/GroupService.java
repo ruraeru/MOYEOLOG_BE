@@ -30,6 +30,8 @@ public class GroupService {
     private final GroupInvitationRepository groupInvitationRepository;
     private final MemoRepository memoRepository;
     private final GroupTopicRepository groupTopicRepository;
+    private final ScheduleRepository scheduleRepository;
+    private final GroupTopicCommentRepository groupTopicCommentRepository;
     private final FileService fileService;
 
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -138,7 +140,7 @@ public class GroupService {
 
         if (groupIds.isEmpty()) return new ArrayList<>();
 
-        // 최근 메모 가져오기
+        // 1. 최근 메모 가져오기
         List<GroupActivityResponse> memoActivities = memoRepository.findByGroupIdInOrderByCreatedAtDesc(groupIds).stream()
                 .limit(20)
                 .map(memo -> {
@@ -149,7 +151,7 @@ public class GroupService {
                             .groupName(group != null ? group.getName() : "알 수 없는 그룹")
                             .id(memo.getId())
                             .title(memo.getTitle())
-                            .contentSnippet(memo.getContent().length() > 100 ? memo.getContent().substring(0, 100) + "..." : memo.getContent())
+                            .contentSnippet(truncateContent(memo.getContent()))
                             .authorNickname(memo.getAuthor().getNickname())
                             .authorProfileImage(memo.getAuthor().getProfileImage())
                             .createdAt(memo.getCreatedAt())
@@ -157,7 +159,7 @@ public class GroupService {
                 })
                 .collect(Collectors.toList());
 
-        // 최근 토픽 가져오기
+        // 2. 최근 토픽 가져오기
         List<GroupActivityResponse> topicActivities = groupTopicRepository.findByGroup_IdInOrderByCreatedAtDesc(groupIds).stream()
                 .limit(20)
                 .map(topic -> GroupActivityResponse.builder()
@@ -166,17 +168,62 @@ public class GroupService {
                         .groupName(topic.getGroup().getName())
                         .id(topic.getId())
                         .title(topic.getTitle())
-                        .contentSnippet(topic.getContent().length() > 100 ? topic.getContent().substring(0, 100).replaceAll("[#*`]", "") + "..." : topic.getContent().replaceAll("[#*`]", ""))
+                        .contentSnippet(truncateContent(topic.getContent().replaceAll("[#*`]", "")))
                         .authorNickname(topic.getAuthor().getNickname())
                         .authorProfileImage(topic.getAuthor().getProfileImage())
                         .createdAt(topic.getCreatedAt())
                         .build())
                 .collect(Collectors.toList());
 
-        return Stream.concat(memoActivities.stream(), topicActivities.stream())
-                .sorted(Comparator.comparing(GroupActivityResponse::getCreatedAt).reversed())
-                .limit(30)
+        // 3. 최근 일정 가져오기
+        List<GroupActivityResponse> scheduleActivities = scheduleRepository.findByGroupIdInOrderByCreatedAtDesc(groupIds).stream()
+                .limit(20)
+                .map(schedule -> {
+                    Group group = groupRepository.findById(schedule.getGroupId()).orElse(null);
+                    return GroupActivityResponse.builder()
+                            .type("SCHEDULE")
+                            .groupId(schedule.getGroupId())
+                            .groupName(group != null ? group.getName() : "알 수 없는 그룹")
+                            .id(schedule.getId())
+                            .title(schedule.getTitle())
+                            .contentSnippet("일정 시간: " + formatDateTime(schedule.getStartTime()) + (schedule.getLocation() != null ? " @ " + schedule.getLocation() : ""))
+                            .authorNickname(schedule.getAuthor().getNickname())
+                            .authorProfileImage(schedule.getAuthor().getProfileImage())
+                            .createdAt(schedule.getCreatedAt())
+                            .build();
+                })
                 .collect(Collectors.toList());
+
+        // 4. 최근 댓글 가져오기
+        List<GroupActivityResponse> commentActivities = groupTopicCommentRepository.findByTopic_Group_IdInOrderByCreatedAtDesc(groupIds).stream()
+                .limit(20)
+                .map(comment -> GroupActivityResponse.builder()
+                        .type("COMMENT")
+                        .groupId(comment.getTopic().getGroup().getId())
+                        .groupName(comment.getTopic().getGroup().getName())
+                        .id(comment.getTopic().getId()) // 토픽 상세로 이동할 수 있게 토픽 ID 사용
+                        .title("토픽에 댓글이 달렸습니다: " + comment.getTopic().getTitle())
+                        .contentSnippet(truncateContent(comment.getContent()))
+                        .authorNickname(comment.getAuthor().getNickname())
+                        .authorProfileImage(comment.getAuthor().getProfileImage())
+                        .createdAt(comment.getCreatedAt())
+                        .build())
+                .collect(Collectors.toList());
+
+        return Stream.of(memoActivities, topicActivities, scheduleActivities, commentActivities)
+                .flatMap(List::stream)
+                .sorted(Comparator.comparing(GroupActivityResponse::getCreatedAt).reversed())
+                .limit(40)
+                .collect(Collectors.toList());
+    }
+
+    private String truncateContent(String content) {
+        if (content == null) return "";
+        return content.length() > 100 ? content.substring(0, 100) + "..." : content;
+    }
+
+    private String formatDateTime(java.time.LocalDateTime dateTime) {
+        return dateTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
     }
 
     @Transactional

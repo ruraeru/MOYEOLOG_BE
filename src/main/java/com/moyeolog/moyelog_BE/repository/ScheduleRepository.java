@@ -20,4 +20,5 @@ public interface ScheduleRepository extends JpaRepository<Schedule, UUID> {
     List<Schedule> findAllByUser(@Param("user") User user);
 
     List<Schedule> findAllByGroupIdOrderByStartTimeAsc(UUID groupId);
+    List<Schedule> findByGroupIdInOrderByCreatedAtDesc(List<UUID> groupIds);
 }

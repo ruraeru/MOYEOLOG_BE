@@ -11,4 +11,5 @@ import java.util.UUID;
 @Repository
 public interface GroupTopicCommentRepository extends JpaRepository<GroupTopicComment, UUID> {
     List<GroupTopicComment> findAllByTopicOrderByCreatedAtAsc(GroupTopic topic);
+    List<GroupTopicComment> findByTopic_Group_IdInOrderByCreatedAtDesc(List<UUID> groupIds);
 }
