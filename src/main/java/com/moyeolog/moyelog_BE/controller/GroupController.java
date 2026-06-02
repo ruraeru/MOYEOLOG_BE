@@ -96,4 +96,13 @@ public class GroupController {
         groupService.rejectInvitation(UUID.fromString(userId), invitationId);
         return ResponseEntity.ok().build();
     }
+
+    @DeleteMapping("/{id}/members/{memberId}")
+    public ResponseEntity<Void> kickMember(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @PathVariable UUID memberId) {
+        groupService.kickMember(UUID.fromString(userId), id, memberId);
+        return ResponseEntity.ok().build();
+    }
 }

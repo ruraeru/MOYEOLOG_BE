@@ -16,6 +16,7 @@ public class GroupResponse {
     private String name;
     private String description;
     private String colorTheme;
+    private UUID createdById;
     private String createdByNickname;
     private List<MemberResponse> members;
     private String inviteCode;

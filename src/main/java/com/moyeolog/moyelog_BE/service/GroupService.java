@@ -10,6 +10,8 @@ import com.moyeolog.moyelog_BE.repository.GroupInvitationRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.GroupRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
+import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
+import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -244,6 +246,28 @@ public class GroupService {
         return convertToResponse(group);
     }
 
+    @Transactional
+    public void kickMember(UUID ownerId, UUID groupId, UUID targetMemberId) {
+        Group group = groupRepository.findById(groupId)
+                .orElseThrow(() -> new ResourceNotFoundException("그룹", groupId));
+
+        if (!group.getCreatedBy().getId().equals(ownerId)) {
+            throw new UnauthorizedAccessException("그룹장만 멤버를 내보낼 수 있습니다.");
+        }
+
+        if (ownerId.equals(targetMemberId)) {
+            throw new RuntimeException("자기 자신을 내보낼 수 없습니다.");
+        }
+
+        User targetUser = userRepository.findById(targetMemberId)
+                .orElseThrow(() -> new ResourceNotFoundException("사용자", targetMemberId));
+
+        GroupMember member = groupMemberRepository.findByGroupAndUser(group, targetUser)
+                .orElseThrow(() -> new ResourceNotFoundException("그룹 멤버", targetMemberId));
+
+        groupMemberRepository.delete(member);
+    }
+
     @Transactional(readOnly = true)
     protected GroupResponse convertToResponse(Group group) {
         List<GroupMember> memberships = groupMemberRepository.findByGroup(group);
@@ -260,6 +284,7 @@ public class GroupService {
                 .name(group.getName())
                 .description(group.getDescription())
                 .colorTheme(group.getColorTheme())
+                .createdById(group.getCreatedBy().getId())
                 .createdByNickname(group.getCreatedBy().getNickname())
                 .members(memberResponses)
                 .inviteCode(group.getInviteCode())

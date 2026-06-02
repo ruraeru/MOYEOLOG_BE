@@ -5,6 +5,7 @@ import com.moyeolog.moyelog_BE.dto.GroupResponse;
 import com.moyeolog.moyelog_BE.entity.Group;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.GroupInvitationRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.GroupRepository;
@@ -87,5 +88,58 @@ class GroupServiceTest {
         assertThatThrownBy(() -> groupService.getGroup(userId, groupId))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Unauthorized");
+    }
+
+    @Test
+    @DisplayName("멤버 강퇴 성공")
+    void kickMember_Success() {
+        // given
+        UUID groupId = UUID.randomUUID();
+        Group group = Group.builder().id(groupId).createdBy(user).build();
+        
+        UUID targetUserId = UUID.randomUUID();
+        User targetUser = User.builder().id(targetUserId).nickname("target").build();
+        GroupMember targetMember = GroupMember.builder().id(UUID.randomUUID()).group(group).user(targetUser).build();
+
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(userRepository.findById(targetUserId)).willReturn(Optional.of(targetUser));
+        given(groupMemberRepository.findByGroupAndUser(group, targetUser)).willReturn(Optional.of(targetMember));
+
+        // when
+        groupService.kickMember(userId, groupId, targetUserId);
+
+        // then
+        verify(groupMemberRepository).delete(targetMember);
+    }
+
+    @Test
+    @DisplayName("멤버 강퇴 실패 - 그룹장 아님")
+    void kickMember_NotOwner_Fail() {
+        // given
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).build();
+        Group group = Group.builder().id(groupId).createdBy(owner).build(); // Not the current user
+        
+        UUID targetUserId = UUID.randomUUID();
+
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+
+        // when & then
+        assertThatThrownBy(() -> groupService.kickMember(userId, groupId, targetUserId))
+                .isInstanceOf(UnauthorizedAccessException.class);
+    }
+
+    @Test
+    @DisplayName("멤버 강퇴 실패 - 자기 자신 강퇴 불가")
+    void kickMember_Self_Fail() {
+        // given
+        UUID groupId = UUID.randomUUID();
+        Group group = Group.builder().id(groupId).createdBy(user).build();
+        
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+
+        // when & then
+        assertThatThrownBy(() -> groupService.kickMember(userId, groupId, userId))
+                .isInstanceOf(RuntimeException.class);
     }
 }
