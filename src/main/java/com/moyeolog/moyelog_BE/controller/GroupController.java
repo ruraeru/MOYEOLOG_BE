@@ -21,6 +21,11 @@ public class GroupController {
     private final MemoService memoService;
     private final ScheduleService scheduleService;
 
+    @GetMapping("/activities")
+    public ResponseEntity<List<GroupActivityResponse>> getRecentActivities(@AuthenticationPrincipal String userId) {
+        return ResponseEntity.ok(groupService.getRecentActivities(UUID.fromString(userId)));
+    }
+
     @PostMapping
     public ResponseEntity<GroupResponse> create(
             @AuthenticationPrincipal String userId,

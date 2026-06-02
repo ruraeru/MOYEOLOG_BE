@@ -6,22 +6,20 @@ import com.moyeolog.moyelog_BE.entity.GroupInvitation;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.enums.InvitationStatus;
-import com.moyeolog.moyelog_BE.repository.GroupInvitationRepository;
-import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
-import com.moyeolog.moyelog_BE.repository.GroupRepository;
-import com.moyeolog.moyelog_BE.repository.UserRepository;
+import com.moyeolog.moyelog_BE.repository.*;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
@@ -30,6 +28,8 @@ public class GroupService {
     private final GroupMemberRepository groupMemberRepository;
     private final UserRepository userRepository;
     private final GroupInvitationRepository groupInvitationRepository;
+    private final MemoRepository memoRepository;
+    private final GroupTopicRepository groupTopicRepository;
     private final FileService fileService;
 
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -125,6 +125,58 @@ public class GroupService {
                 .orElseThrow(() -> new RuntimeException("Unauthorized access to group"));
 
         return convertToResponse(group);
+    }
+
+    @Transactional(readOnly = true)
+    public List<GroupActivityResponse> getRecentActivities(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+
+        List<UUID> groupIds = groupMemberRepository.findByUser(user).stream()
+                .map(m -> m.getGroup().getId())
+                .collect(Collectors.toList());
+
+        if (groupIds.isEmpty()) return new ArrayList<>();
+
+        // 최근 메모 가져오기
+        List<GroupActivityResponse> memoActivities = memoRepository.findByGroupIdInOrderByCreatedAtDesc(groupIds).stream()
+                .limit(20)
+                .map(memo -> {
+                    Group group = groupRepository.findById(memo.getGroupId()).orElse(null);
+                    return GroupActivityResponse.builder()
+                            .type("MEMO")
+                            .groupId(memo.getGroupId())
+                            .groupName(group != null ? group.getName() : "알 수 없는 그룹")
+                            .id(memo.getId())
+                            .title(memo.getTitle())
+                            .contentSnippet(memo.getContent().length() > 100 ? memo.getContent().substring(0, 100) + "..." : memo.getContent())
+                            .authorNickname(memo.getAuthor().getNickname())
+                            .authorProfileImage(memo.getAuthor().getProfileImage())
+                            .createdAt(memo.getCreatedAt())
+                            .build();
+                })
+                .collect(Collectors.toList());
+
+        // 최근 토픽 가져오기
+        List<GroupActivityResponse> topicActivities = groupTopicRepository.findByGroup_IdInOrderByCreatedAtDesc(groupIds).stream()
+                .limit(20)
+                .map(topic -> GroupActivityResponse.builder()
+                        .type("TOPIC")
+                        .groupId(topic.getGroup().getId())
+                        .groupName(topic.getGroup().getName())
+                        .id(topic.getId())
+                        .title(topic.getTitle())
+                        .contentSnippet(topic.getContent().length() > 100 ? topic.getContent().substring(0, 100).replaceAll("[#*`]", "") + "..." : topic.getContent().replaceAll("[#*`]", ""))
+                        .authorNickname(topic.getAuthor().getNickname())
+                        .authorProfileImage(topic.getAuthor().getProfileImage())
+                        .createdAt(topic.getCreatedAt())
+                        .build())
+                .collect(Collectors.toList());
+
+        return Stream.concat(memoActivities.stream(), topicActivities.stream())
+                .sorted(Comparator.comparing(GroupActivityResponse::getCreatedAt).reversed())
+                .limit(30)
+                .collect(Collectors.toList());
     }
 
     @Transactional

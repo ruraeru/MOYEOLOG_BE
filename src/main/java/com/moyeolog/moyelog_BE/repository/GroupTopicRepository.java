@@ -11,4 +11,5 @@ import java.util.UUID;
 @Repository
 public interface GroupTopicRepository extends JpaRepository<GroupTopic, UUID> {
     List<GroupTopic> findAllByGroupOrderByCreatedAtDesc(Group group);
+    List<GroupTopic> findByGroup_IdInOrderByCreatedAtDesc(List<UUID> groupIds);
 }

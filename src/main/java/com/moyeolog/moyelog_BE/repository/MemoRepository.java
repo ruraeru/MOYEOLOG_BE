@@ -12,4 +12,5 @@ import java.util.UUID;
 public interface MemoRepository extends JpaRepository<Memo, UUID> {
     List<Memo> findAllByAuthorOrderByCreatedAtDesc(User author);
     List<Memo> findByGroupIdOrderByCreatedAtDesc(UUID groupId);
+    List<Memo> findByGroupIdInOrderByCreatedAtDesc(List<UUID> groupIds);
 }
