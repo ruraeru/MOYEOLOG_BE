@@ -41,6 +41,10 @@ class MemoServiceTest {
     private MemoAiInsightRepository memoAiInsightRepository;
     @Mock
     private GeminiService geminiService;
+    @Mock
+    private GroupRepository groupRepository;
+    @Mock
+    private GroupMemberRepository groupMemberRepository;
 
     @InjectMocks
     private MemoService memoService;
@@ -122,5 +126,35 @@ class MemoServiceTest {
         // then
         assertThat(response.getIsFavorite()).isTrue();
         assertThat(memo.getIsFavorite()).isTrue();
+    }
+
+    @Test
+    @DisplayName("모임 멤버인 경우 그룹 메모 접근 성공")
+    void getMemo_GroupMember_Success() {
+        // given
+        UUID groupId = UUID.randomUUID();
+        UUID otherUserId = UUID.randomUUID();
+        User otherUser = User.builder().id(otherUserId).build();
+        
+        Memo groupMemo = Memo.builder()
+                .id(UUID.randomUUID())
+                .author(user)
+                .groupId(groupId)
+                .build();
+                
+        com.moyeolog.moyelog_BE.entity.Group group = com.moyeolog.moyelog_BE.entity.Group.builder().id(groupId).build();
+        com.moyeolog.moyelog_BE.entity.GroupMember groupMember = com.moyeolog.moyelog_BE.entity.GroupMember.builder().build();
+
+        given(memoRepository.findById(groupMemo.getId())).willReturn(Optional.of(groupMemo));
+        given(userRepository.findById(otherUserId)).willReturn(Optional.of(otherUser));
+        given(memoShareRepository.findByMemoAndSharedTo(groupMemo, otherUser)).willReturn(Optional.empty());
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.findByGroupAndUser(group, otherUser)).willReturn(Optional.of(groupMember));
+
+        // when
+        MemoResponse response = memoService.getMemo(otherUserId, groupMemo.getId());
+
+        // then
+        assertThat(response.getId()).isEqualTo(groupMemo.getId());
     }
 }

@@ -35,6 +35,8 @@ public class MemoService {
     private final MemoShareRepository memoShareRepository;
     private final MemoAiInsightRepository memoAiInsightRepository;
     private final GeminiService geminiService;
+    private final GroupRepository groupRepository;
+    private final GroupMemberRepository groupMemberRepository;
 
     // ─── 공개 메서드 (API) ──────────────────────────────────────────
 
@@ -193,12 +195,22 @@ public class MemoService {
 
     private void validateAccess(Memo memo, UUID userId) {
         User user = findUserById(userId);
+        
         boolean isAuthor = memo.getAuthor().getId().equals(userId);
-        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
+        if (isAuthor) return;
 
-        if (!isAuthor && !isShared) {
-            throw new UnauthorizedAccessException("해당 메모에 접근할 수 있는 권한이 없습니다.");
+        boolean isShared = memoShareRepository.findByMemoAndSharedTo(memo, user).isPresent();
+        if (isShared) return;
+
+        if (memo.getGroupId() != null) {
+            Group group = groupRepository.findById(memo.getGroupId()).orElse(null);
+            if (group != null) {
+                boolean isGroupMember = groupMemberRepository.findByGroupAndUser(group, user).isPresent();
+                if (isGroupMember) return;
+            }
         }
+
+        throw new UnauthorizedAccessException("해당 메모에 접근할 수 있는 권한이 없습니다.");
     }
 
     private String handleImageUpload(MultipartFile image, String currentImageUrl) {
