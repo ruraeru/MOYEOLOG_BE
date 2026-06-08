@@ -21,4 +21,5 @@ public interface ScheduleRepository extends JpaRepository<Schedule, UUID> {
 
     List<Schedule> findAllByGroupIdOrderByStartTimeAsc(UUID groupId);
     List<Schedule> findByGroupIdInOrderByCreatedAtDesc(List<UUID> groupIds);
+    List<Schedule> findByTaggedMemosContains(com.moyeolog.moyelog_BE.entity.Memo memo);
 }

@@ -24,6 +24,28 @@ public class MemoResponse {
     private List<String> tags;
     private MemoInsightResponse insight;
     private Boolean isFavorite;
+    private List<MemoSummaryResponse> taggedMemos;
+    private List<ScheduleSummaryResponse> taggedSchedules;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class MemoSummaryResponse {
+        private UUID id;
+        private String title;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class ScheduleSummaryResponse {
+        private UUID id;
+        private String title;
+    }
 }

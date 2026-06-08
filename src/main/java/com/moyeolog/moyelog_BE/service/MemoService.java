@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -21,7 +22,7 @@ import java.util.stream.Collectors;
 
 /**
  * 메모 비즈니스 로직을 처리하는 서비스 클래스입니다.
- * GEMINI.md 표준에 따라 리팩토링되었습니다.
+ * 다중 태그 기능 (메모 및 일정)이 추가되었습니다.
  */
 @Service
 @RequiredArgsConstructor
@@ -37,6 +38,7 @@ public class MemoService {
     private final GeminiService geminiService;
     private final GroupRepository groupRepository;
     private final GroupMemberRepository groupMemberRepository;
+    private final ScheduleRepository scheduleRepository;
 
     // ─── 공개 메서드 (API) ──────────────────────────────────────────
 
@@ -62,16 +64,24 @@ public class MemoService {
         User author = findUserById(userId);
         String imageUrl = handleImageUpload(image, null);
 
+        List<Memo> taggedMemos = new ArrayList<>();
+        if (request.getTaggedMemoIds() != null && !request.getTaggedMemoIds().isEmpty()) {
+            taggedMemos = memoRepository.findAllById(request.getTaggedMemoIds());
+        }
+
         Memo memo = Memo.builder()
                 .author(author)
                 .groupId(request.getGroupId())
                 .title(request.getTitle())
                 .content(request.getContent())
                 .imageUrl(imageUrl)
+                .taggedMemos(taggedMemos)
                 .build();
 
         Memo savedMemo = memoRepository.save(memo);
         saveTags(savedMemo, request.getTags());
+
+        syncSchedules(savedMemo, request.getTaggedScheduleIds());
 
         return convertToResponse(savedMemo);
     }
@@ -89,6 +99,10 @@ public class MemoService {
     public void deleteMemo(UUID userId, UUID memoId) {
         Memo memo = findMemoById(memoId);
         validateAuthor(memo, userId);
+        
+        // 메모 삭제 시 연결된 일정에서도 해당 메모를 삭제 (동기화)
+        syncSchedules(memo, new ArrayList<>());
+
         memoRepository.delete(memo);
     }
 
@@ -110,10 +124,18 @@ public class MemoService {
         User modifier = findUserById(userId);
 
         String imageUrl = handleImageUpload(image, memo.getImageUrl());
-        memo.update(request.getTitle(), request.getContent(), imageUrl, modifier);
+
+        List<Memo> taggedMemos = new ArrayList<>();
+        if (request.getTaggedMemoIds() != null && !request.getTaggedMemoIds().isEmpty()) {
+            taggedMemos = memoRepository.findAllById(request.getTaggedMemoIds());
+        }
+
+        memo.update(request.getTitle(), request.getContent(), imageUrl, modifier, taggedMemos);
 
         memoTagRepository.deleteAllByMemo(memo);
         saveTags(memo, request.getTags());
+
+        syncSchedules(memo, request.getTaggedScheduleIds());
 
         return convertToResponse(memo);
     }
@@ -127,7 +149,6 @@ public class MemoService {
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
-        // 그룹 메모 접근 권한 체크 필요 시 여기에 추가 가능
         return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
                 .map(this::convertToResponse)
                 .collect(Collectors.toList());
@@ -251,12 +272,51 @@ public class MemoService {
                         .build());
     }
 
+    private void syncSchedules(Memo memo, List<UUID> newScheduleIds) {
+        List<Schedule> oldSchedules = scheduleRepository.findByTaggedMemosContains(memo);
+        List<Schedule> newSchedules = new ArrayList<>();
+        if (newScheduleIds != null && !newScheduleIds.isEmpty()) {
+            newSchedules = scheduleRepository.findAllById(newScheduleIds);
+        }
+
+        for (Schedule old : oldSchedules) {
+            if (!newSchedules.contains(old)) {
+                old.getTaggedMemos().remove(memo);
+                scheduleRepository.save(old);
+            }
+        }
+        for (Schedule newSch : newSchedules) {
+            if (!newSch.getTaggedMemos().contains(memo)) {
+                newSch.getTaggedMemos().add(memo);
+                scheduleRepository.save(newSch);
+            }
+        }
+    }
+
     private MemoResponse convertToResponse(Memo memo) {
         List<String> tags = memoTagRepository.findAllByMemo(memo).stream()
                 .map(MemoTag::getName)
                 .collect(Collectors.toList());
 
         MemoAiInsight insight = memoAiInsightRepository.findById(memo.getId()).orElse(null);
+
+        List<MemoResponse.MemoSummaryResponse> memoSummaries = new ArrayList<>();
+        if (memo.getTaggedMemos() != null) {
+            memoSummaries = memo.getTaggedMemos().stream()
+                .map(m -> MemoResponse.MemoSummaryResponse.builder()
+                    .id(m.getId())
+                    .title(m.getTitle())
+                    .build())
+                .collect(Collectors.toList());
+        }
+
+        List<Schedule> schedules = scheduleRepository.findByTaggedMemosContains(memo);
+        List<MemoResponse.ScheduleSummaryResponse> scheduleSummaries = schedules.stream()
+                .map(s -> MemoResponse.ScheduleSummaryResponse.builder()
+                    .id(s.getId())
+                    .title(s.getTitle())
+                    .build())
+                .collect(Collectors.toList());
         
         return MemoResponse.builder()
                 .id(memo.getId())
@@ -272,6 +332,8 @@ public class MemoService {
                 .tags(tags)
                 .insight(insight != null ? convertToInsightResponse(insight) : null)
                 .isFavorite(memo.getIsFavorite() != null && memo.getIsFavorite())
+                .taggedMemos(memoSummaries)
+                .taggedSchedules(scheduleSummaries)
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
                 .build();

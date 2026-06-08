@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -27,7 +28,7 @@ public class Memo {
     private User lastModifier;
 
     @Column(name = "group_id", columnDefinition = "BINARY(16)")
-    private UUID groupId; // 특정 모임에 속할 경우
+    private UUID groupId;
 
     @Column(nullable = false)
     private String title;
@@ -41,6 +42,17 @@ public class Memo {
     @Column(name = "is_favorite")
     @Builder.Default
     private Boolean isFavorite = false;
+
+    @ManyToMany
+    @JoinTable(
+        name = "memo_tagged_memos",
+        joinColumns = @JoinColumn(name = "memo_id"),
+        inverseJoinColumns = @JoinColumn(name = "tagged_memo_id")
+    )
+    private List<Memo> taggedMemos;
+
+    @ManyToMany(mappedBy = "taggedMemos")
+    private List<Schedule> taggedSchedules;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -60,11 +72,12 @@ public class Memo {
         updatedAt = LocalDateTime.now();
     }
 
-    public void update(String title, String content, String imageUrl, User modifier) {
+    public void update(String title, String content, String imageUrl, User modifier, List<Memo> taggedMemos) {
         this.title = title;
         this.content = content;
         this.imageUrl = imageUrl;
         this.lastModifier = modifier;
+        this.taggedMemos = taggedMemos;
     }
 
     public void toggleFavorite() {
