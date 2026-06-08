@@ -1,6 +1,10 @@
 spring:
   application:
     name: moyelog_BE
+    
+  output:
+    ansi:
+      enabled: ALWAYS
   
   servlet:
     multipart:
@@ -16,10 +20,18 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
         format_sql: true
+        highlight_sql: true
+
+logging:
+  pattern:
+    console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"
+  level:
+    root: INFO
+    org.hibernate.SQL: DEBUG
 
 jwt:
   secret: your_jwt_secret_here
