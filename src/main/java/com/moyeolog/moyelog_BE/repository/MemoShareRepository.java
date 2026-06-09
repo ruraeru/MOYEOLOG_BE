@@ -14,4 +14,5 @@ import java.util.UUID;
 public interface MemoShareRepository extends JpaRepository<MemoShare, UUID> {
     List<MemoShare> findBySharedToOrderBySharedAtDesc(User user);
     Optional<MemoShare> findByMemoAndSharedTo(Memo memo, User user);
+    void deleteAllByMemo(Memo memo);
 }

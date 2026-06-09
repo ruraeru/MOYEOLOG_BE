@@ -103,6 +103,20 @@ public class MemoService {
         // 메모 삭제 시 연결된 일정에서도 해당 메모를 삭제 (동기화)
         syncSchedules(memo, new ArrayList<>());
 
+        // 다른 메모가 이 메모를 태그하고 있다면 관계 삭제 (자기 참조 동기화)
+        List<Memo> referencingMemos = memoRepository.findByTaggedMemosContains(memo);
+        for (Memo refMemo : referencingMemos) {
+            refMemo.getTaggedMemos().remove(memo);
+            memoRepository.save(refMemo);
+        }
+
+        // 연관된 자식 엔티티 삭제
+        memoTagRepository.deleteAllByMemo(memo);
+        memoShareRepository.deleteAllByMemo(memo);
+        if (memoAiInsightRepository.existsById(memo.getId())) {
+            memoAiInsightRepository.deleteById(memo.getId());
+        }
+
         memoRepository.delete(memo);
     }
 
