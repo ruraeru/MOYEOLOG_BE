@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -34,6 +36,13 @@ public class GroupTopic {
 
     @Column(name = "image_url", columnDefinition = "LONGTEXT")
     private String imageUrl;
+
+    @OneToMany(mappedBy = "topic", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<GroupTopicComment> comments = new ArrayList<>();
+
+    @OneToOne(mappedBy = "topic", cascade = CascadeType.ALL, orphanRemoval = true)
+    private GroupTopicInsight insight;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

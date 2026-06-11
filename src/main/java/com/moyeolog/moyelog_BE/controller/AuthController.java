@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
@@ -22,5 +24,13 @@ public class AuthController {
         AuthSyncResponse response = authService.syncUser(request);
         log.info("Successfully synced user: {}", response.getUser().getId());
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<Map<String, String>> refresh(@RequestBody Map<String, String> request) {
+        String refreshToken = request.get("refreshToken");
+        log.info("Received token refresh request");
+        Map<String, String> tokens = authService.refreshToken(refreshToken);
+        return ResponseEntity.ok(tokens);
     }
 }

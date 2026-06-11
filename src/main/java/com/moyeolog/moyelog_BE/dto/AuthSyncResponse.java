@@ -10,5 +10,6 @@ import lombok.*;
 @Builder
 public class AuthSyncResponse {
     private String accessToken;
+    private String refreshToken;
     private User user;
 }

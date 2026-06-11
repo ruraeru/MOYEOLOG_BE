@@ -17,7 +17,10 @@ public class JwtProvider {
     private String salt;
 
     @Value("${jwt.expiration}")
-    private long expirationTime;
+    private long accessTokenExpirationTime;
+
+    @Value("${jwt.refresh-expiration:604800000}") // Default 7 days
+    private long refreshTokenExpirationTime;
 
     private SecretKey secretKey;
 
@@ -27,13 +30,21 @@ public class JwtProvider {
         this.secretKey = Keys.hmacShaKeyFor(keyBytes);
     }
 
-    public String createToken(String userId) {
+    public String createAccessToken(String userId) {
+        return createToken(userId, accessTokenExpirationTime);
+    }
+
+    public String createRefreshToken(String userId) {
+        return createToken(userId, refreshTokenExpirationTime);
+    }
+
+    private String createToken(String userId, long expiration) {
         Claims claims = Jwts.claims().subject(userId).build();
         Date now = new Date();
         return Jwts.builder()
                 .claims(claims)
                 .issuedAt(now)
-                .expiration(new Date(now.getTime() + expirationTime))
+                .expiration(new Date(now.getTime() + expiration))
                 .signWith(secretKey)
                 .compact();
     }
@@ -51,8 +62,15 @@ public class JwtProvider {
         try {
             Jwts.parser().verifyWith(secretKey).build().parseSignedClaims(token);
             return true;
-        } catch (JwtException | IllegalArgumentException e) {
-            return false;
+        } catch (ExpiredJwtException e) {
+            System.err.println("JWT Token expired: " + e.getMessage());
+        } catch (MalformedJwtException e) {
+            System.err.println("JWT Token malformed: " + e.getMessage());
+        } catch (SecurityException | UnsupportedJwtException e) {
+            System.err.println("JWT Token invalid: " + e.getMessage());
+        } catch (IllegalArgumentException e) {
+            System.err.println("JWT Token claims string is empty: " + e.getMessage());
         }
+        return false;
     }
 }

@@ -2,20 +2,26 @@ package com.moyeolog.moyelog_BE.service;
 
 import com.moyeolog.moyelog_BE.dto.AuthSyncRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncResponse;
+import com.moyeolog.moyelog_BE.entity.RefreshToken;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.repository.RefreshTokenRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
 import com.moyeolog.moyelog_BE.security.JwtProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Random;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
     private final UserRepository userRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final JwtProvider jwtProvider;
     private final Random random = new Random();
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -73,12 +79,57 @@ public class AuthService {
                     return createUser(request, finalNickname, finalEmail);
                 });
 
-        String token = jwtProvider.createToken(user.getId().toString());
+        String accessToken = jwtProvider.createAccessToken(user.getId().toString());
+        String refreshToken = jwtProvider.createRefreshToken(user.getId().toString());
+
+        saveOrUpdateRefreshToken(user.getId(), refreshToken);
 
         return AuthSyncResponse.builder()
-                .accessToken(token)
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
                 .user(user)
                 .build();
+    }
+
+    @Transactional
+    public Map<String, String> refreshToken(String refreshToken) {
+        if (!jwtProvider.validateToken(refreshToken)) {
+            throw new RuntimeException("유효하지 않은 리프레시 토큰입니다.");
+        }
+
+        RefreshToken storedToken = refreshTokenRepository.findByToken(refreshToken)
+                .orElseThrow(() -> new RuntimeException("존재하지 않는 리프레시 토큰입니다."));
+
+        if (storedToken.getExpiryDate().isBefore(LocalDateTime.now())) {
+            refreshTokenRepository.delete(storedToken);
+            throw new RuntimeException("만료된 리프레시 토큰입니다.");
+        }
+
+        String userId = storedToken.getUserId().toString();
+        String newAccessToken = jwtProvider.createAccessToken(userId);
+        String newRefreshToken = jwtProvider.createRefreshToken(userId);
+
+        storedToken.updateToken(newRefreshToken, LocalDateTime.now().plusDays(7));
+
+        return Map.of(
+                "accessToken", newAccessToken,
+                "refreshToken", newRefreshToken
+        );
+    }
+
+    private void saveOrUpdateRefreshToken(UUID userId, String token) {
+        RefreshToken refreshToken = refreshTokenRepository.findByUserId(userId)
+                .map(existingToken -> {
+                    existingToken.updateToken(token, LocalDateTime.now().plusDays(7));
+                    return existingToken;
+                })
+                .orElseGet(() -> RefreshToken.builder()
+                        .userId(userId)
+                        .token(token)
+                        .expiryDate(LocalDateTime.now().plusDays(7))
+                        .build());
+        
+        refreshTokenRepository.save(refreshToken);
     }
 
     private User createUser(AuthSyncRequest request, String nickname, String email) {

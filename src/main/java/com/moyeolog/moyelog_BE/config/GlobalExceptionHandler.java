@@ -1,3 +1,6 @@
+package com.moyeolog.moyelog_BE.config;
+
+import com.moyeolog.moyelog_BE.dto.ErrorResponse;
 import com.moyeolog.moyelog_BE.exception.MoyeologException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -6,55 +9,52 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
-import java.util.HashMap;
-import java.util.Map;
-
 @ControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(MoyeologException.class)
-    public ResponseEntity<Map<String, Object>> handleMoyeologException(MoyeologException e) {
+    public ResponseEntity<ErrorResponse> handleMoyeologException(MoyeologException e) {
         log.error("Moyeolog exception: status={}, message={}", e.getStatus(), e.getMessage());
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", e.getStatus().getReasonPhrase());
-        body.put("message", e.getMessage());
-        return new ResponseEntity<>(body, e.getStatus());
+        return new ResponseEntity<>(
+                ErrorResponse.of(e.getStatus().getReasonPhrase(), e.getMessage(), e.getStatus().value()),
+                e.getStatus()
+        );
     }
 
     @ExceptionHandler(AccessDeniedException.class)
-    public ResponseEntity<Map<String, Object>> handleAccessDeniedException(AccessDeniedException e) {
+    public ResponseEntity<ErrorResponse> handleAccessDeniedException(AccessDeniedException e) {
         log.error("Access denied: ", e);
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Forbidden");
-        body.put("message", "접근 권한이 없습니다: " + e.getMessage());
-        return new ResponseEntity<>(body, HttpStatus.FORBIDDEN);
-    }
-
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<Map<String, Object>> handleRuntimeException(RuntimeException e) {
-        log.error("Runtime exception occurred: ", e);
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Internal Server Error");
-        body.put("message", e.getMessage());
-        return new ResponseEntity<>(body, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<Map<String, Object>> handleException(Exception e) {
-        log.error("Unexpected error occurred: ", e);
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Unexpected Error");
-        body.put("message", e.getMessage());
-        return new ResponseEntity<>(body, HttpStatus.INTERNAL_SERVER_ERROR);
+        return new ResponseEntity<>(
+                ErrorResponse.of("Forbidden", "접근 권한이 없습니다: " + e.getMessage(), HttpStatus.FORBIDDEN.value()),
+                HttpStatus.FORBIDDEN
+        );
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, Object>> handleIllegalArgumentException(IllegalArgumentException e) {
+    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(IllegalArgumentException e) {
         log.error("Invalid argument: ", e);
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Bad Request");
-        body.put("message", "유효하지 않은 요청 데이터입니다: " + e.getMessage());
-        return new ResponseEntity<>(body, HttpStatus.BAD_REQUEST);
+        return new ResponseEntity<>(
+                ErrorResponse.of("Bad Request", "유효하지 않은 요청 데이터입니다: " + e.getMessage(), HttpStatus.BAD_REQUEST.value()),
+                HttpStatus.BAD_REQUEST
+        );
+    }
+
+    @ExceptionHandler(RuntimeException.class)
+    public ResponseEntity<ErrorResponse> handleRuntimeException(RuntimeException e) {
+        log.error("Runtime exception occurred: ", e);
+        return new ResponseEntity<>(
+                ErrorResponse.of("Internal Server Error", e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()),
+                HttpStatus.INTERNAL_SERVER_ERROR
+        );
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleException(Exception e) {
+        log.error("Unexpected error occurred: ", e);
+        return new ResponseEntity<>(
+                ErrorResponse.of("Unexpected Error", e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()),
+                HttpStatus.INTERNAL_SERVER_ERROR
+        );
     }
 }
