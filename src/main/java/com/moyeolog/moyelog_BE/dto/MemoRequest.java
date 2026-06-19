@@ -20,7 +20,6 @@ public class MemoRequest {
     
     private String imageUrl;
     
-    @NotNull(message = "그룹 ID는 필수입니다.")
     private UUID groupId;
     
     private List<String> tags;
