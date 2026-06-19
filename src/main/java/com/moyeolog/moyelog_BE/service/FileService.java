@@ -28,6 +28,17 @@ public class FileService {
 
             // 고유한 파일 이름 생성
             String originalFilename = file.getOriginalFilename();
+            String contentType = file.getContentType();
+            
+            if (contentType == null) {
+                throw new IllegalArgumentException("Content type must be provided.");
+            }
+            
+            java.util.List<String> allowedMimeTypes = java.util.Arrays.asList("image/jpeg", "image/png", "image/gif", "image/webp");
+            if (!allowedMimeTypes.contains(contentType.toLowerCase())) {
+                throw new IllegalArgumentException("Invalid file type. Only JPEG, PNG, GIF, and WEBP are allowed.");
+            }
+
             String extension = "";
             if (originalFilename != null && originalFilename.contains(".")) {
                 extension = originalFilename.substring(originalFilename.lastIndexOf("."));

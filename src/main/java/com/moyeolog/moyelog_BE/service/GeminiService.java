@@ -117,7 +117,7 @@ public class GeminiService {
 
         } catch (Exception e) {
             log.error("[Gemini] AI 분석 실패: {}", e.getMessage(), e);
-            throw new RuntimeException("AI 분석 중 오류가 발생했습니다: " + e.getMessage());
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 분석 중 오류가 발생했습니다: " + e.getMessage());
         }
     }
 
@@ -127,7 +127,7 @@ public class GeminiService {
         JsonNode candidates = root.path("candidates");
         if (candidates.isMissingNode() || candidates.size() == 0) {
             log.error("[Gemini] No candidates found in response: {}", response);
-            throw new RuntimeException("AI가 응답을 생성하지 못했습니다.");
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI가 응답을 생성하지 못했습니다.");
         }
 
         String textResponse = candidates.get(0).path("content").path("parts").get(0).path("text").asText();
@@ -147,7 +147,7 @@ public class GeminiService {
             return objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
         } catch (Exception e) {
             log.error("[Gemini] JSON Parsing Failed. Raw text: {}", textResponse);
-            throw new RuntimeException("AI 응답 형식이 올바르지 않습니다.");
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 응답 형식이 올바르지 않습니다.");
         }
     }
 }

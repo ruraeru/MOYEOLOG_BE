@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.controller;
 import com.moyeolog.moyelog_BE.dto.ScheduleRequest;
 import com.moyeolog.moyelog_BE.dto.ScheduleResponse;
 import com.moyeolog.moyelog_BE.service.ScheduleService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -21,7 +22,7 @@ public class ScheduleController {
     @PostMapping
     public ResponseEntity<ScheduleResponse> create(
             @AuthenticationPrincipal String userId,
-            @RequestBody ScheduleRequest request) {
+            @Valid @RequestBody ScheduleRequest request) {
         return ResponseEntity.ok(scheduleService.createSchedule(UUID.fromString(userId), request));
     }
 
@@ -34,7 +35,7 @@ public class ScheduleController {
     public ResponseEntity<ScheduleResponse> update(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id,
-            @RequestBody ScheduleRequest request) {
+            @Valid @RequestBody ScheduleRequest request) {
         return ResponseEntity.ok(scheduleService.updateSchedule(UUID.fromString(userId), id, request));
     }
 

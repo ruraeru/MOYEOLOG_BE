@@ -5,6 +5,7 @@ import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
 import com.moyeolog.moyelog_BE.service.MemoService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,7 +26,7 @@ public class MemoController {
     @PostMapping(consumes = {"multipart/form-data"})
     public ResponseEntity<MemoResponse> create(
             @AuthenticationPrincipal String userId,
-            @RequestPart("memo") MemoRequest request,
+            @Valid @RequestPart("memo") MemoRequest request,
             @RequestPart(value = "image", required = false) MultipartFile image) {
         return ResponseEntity.ok(memoService.createMemo(UUID.fromString(userId), request, image));
     }
@@ -34,7 +35,7 @@ public class MemoController {
     public ResponseEntity<MemoResponse> update(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id,
-            @RequestPart("memo") MemoRequest request,
+            @Valid @RequestPart("memo") MemoRequest request,
             @RequestPart(value = "image", required = false) MultipartFile image) {
         return ResponseEntity.ok(memoService.updateMemo(UUID.fromString(userId), id, request, image));
     }

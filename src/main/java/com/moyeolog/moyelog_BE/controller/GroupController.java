@@ -4,6 +4,7 @@ import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.service.GroupService;
 import com.moyeolog.moyelog_BE.service.MemoService;
 import com.moyeolog.moyelog_BE.service.ScheduleService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -29,7 +30,7 @@ public class GroupController {
     @PostMapping
     public ResponseEntity<GroupResponse> create(
             @AuthenticationPrincipal String userId,
-            @RequestBody GroupRequest request) {
+            @Valid @RequestBody GroupRequest request) {
         return ResponseEntity.ok(groupService.createGroup(UUID.fromString(userId), request));
     }
 
@@ -47,7 +48,7 @@ public class GroupController {
     public ResponseEntity<GroupResponse> update(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id,
-            @RequestPart("group") GroupRequest request,
+            @Valid @RequestPart("group") GroupRequest request,
             @RequestPart(value = "image", required = false) org.springframework.web.multipart.MultipartFile image,
             @RequestPart(value = "bgImage", required = false) org.springframework.web.multipart.MultipartFile bgImage) {
         return ResponseEntity.ok(groupService.updateGroup(UUID.fromString(userId), id, request, image, bgImage));
