@@ -4,9 +4,14 @@ import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.entity.Group;
 import com.moyeolog.moyelog_BE.entity.GroupInvitation;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
+import com.moyeolog.moyelog_BE.entity.GroupTopic;
+import com.moyeolog.moyelog_BE.entity.Memo;
+import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.enums.InvitationStatus;
 import com.moyeolog.moyelog_BE.repository.*;
+import com.moyeolog.moyelog_BE.exception.BadRequestException;
+import com.moyeolog.moyelog_BE.exception.ConflictException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -16,7 +21,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -40,8 +47,7 @@ public class GroupService {
 
     @Transactional
     public GroupResponse createGroup(UUID userId, GroupRequest request) {
-        User creator = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User creator = findUserById(userId);
 
         String inviteCode = generateUniqueInviteCode();
 
@@ -79,53 +85,41 @@ public class GroupService {
 
     @Transactional
     public void joinGroupByCode(UUID userId, String inviteCode) {
-        Group group = groupRepository.findByInviteCode(inviteCode.toUpperCase())
-                .orElseThrow(() -> new RuntimeException("Invalid invite code"));
+        if (inviteCode == null || inviteCode.isBlank()) {
+            throw new BadRequestException("초대 코드를 입력해주세요.");
+        }
+        Group group = groupRepository.findByInviteCode(inviteCode.trim().toUpperCase())
+                .orElseThrow(() -> new ResourceNotFoundException("초대 코드", inviteCode.trim()));
+        User user = findUserById(userId);
 
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        // 이미 멤버인지 확인
-        boolean alreadyMember = groupMemberRepository.findByGroup(group).stream()
-                .anyMatch(m -> m.getUser().getId().equals(userId));
-
-        if (alreadyMember) {
-            throw new RuntimeException("Already a member of this group");
+        if (isMember(group.getId(), userId)) {
+            throw new ConflictException("이미 가입한 그룹입니다.");
         }
 
-        GroupMember member = GroupMember.builder()
+        groupMemberRepository.save(GroupMember.builder()
                 .group(group)
                 .user(user)
-                .build();
-        groupMemberRepository.save(member);
+                .build());
     }
 
     @Transactional(readOnly = true)
     public List<GroupResponse> getMyGroups(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = findUserById(userId);
 
-        List<GroupMember> memberships = groupMemberRepository.findByUser(user);
-
-        return memberships.stream()
-                .map(membership -> convertToResponse(membership.getGroup()))
+        // 과거 데이터에 중복 멤버십이 있어도 그룹이 두 번 나오지 않도록 한다.
+        Map<UUID, Group> groups = new LinkedHashMap<>();
+        for (GroupMember membership : groupMemberRepository.findByUser(user)) {
+            groups.putIfAbsent(membership.getGroup().getId(), membership.getGroup());
+        }
+        return groups.values().stream()
+                .map(this::convertToResponse)
                 .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
     public GroupResponse getGroup(UUID userId, UUID groupId) {
-        Group group = groupRepository.findById(groupId)
-                .orElseThrow(() -> new RuntimeException("Group not found"));
-
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        // 멤버인지 확인 (보안)
-        groupMemberRepository.findByGroup(group).stream()
-                .filter(m -> m.getUser().getId().equals(userId))
-                .findFirst()
-                .orElseThrow(() -> new RuntimeException("Unauthorized access to group"));
-
+        Group group = findGroupById(groupId);
+        requireMember(groupId, userId);
         return convertToResponse(group);
     }
 
@@ -226,51 +220,66 @@ public class GroupService {
         return dateTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
     }
 
+    /**
+     * 그룹 초대. userIds(사용자 UUID)와 emails 중 최소 하나는 비어 있지 않아야 합니다.
+     * 이미 멤버이거나 이미 대기 중인 초대가 있는 사용자는 건너뜁니다.
+     */
     @Transactional
     public void inviteMembers(UUID inviterId, UUID groupId, GroupInviteRequest request) {
-        Group group = groupRepository.findById(groupId)
-                .orElseThrow(() -> new RuntimeException("Group not found"));
+        Group group = findGroupById(groupId);
+        User inviter = findUserById(inviterId);
 
-        User inviter = userRepository.findById(inviterId)
-                .orElseThrow(() -> new RuntimeException("Inviter not found"));
+        if (!isMember(groupId, inviterId)) {
+            throw new UnauthorizedAccessException("그룹 멤버만 다른 사용자를 초대할 수 있습니다.");
+        }
 
-        // 초대자가 멤버인지 확인
-        groupMemberRepository.findByGroup(group).stream()
-                .filter(m -> m.getUser().getId().equals(inviterId))
-                .findFirst()
-                .orElseThrow(() -> new RuntimeException("Only group members can invite others"));
+        List<UUID> userIds = new ArrayList<>();
+        if (request != null && request.getUserIds() != null) {
+            request.getUserIds().stream().filter(id -> id != null).forEach(userIds::add);
+        }
+        List<String> emails = new ArrayList<>();
+        if (request != null && request.getEmails() != null) {
+            request.getEmails().stream()
+                    .filter(email -> email != null && !email.isBlank())
+                    .map(String::trim)
+                    .forEach(emails::add);
+        }
+        if (userIds.isEmpty() && emails.isEmpty()) {
+            throw new BadRequestException("초대할 사용자를 한 명 이상 지정해주세요.");
+        }
 
-        for (String email : request.getEmails()) {
-            User invitee = userRepository.findByEmail(email)
-                    .orElseThrow(() -> new RuntimeException("User not found with email: " + email));
+        // 초대 대상 수집 (중복 제거)
+        Map<UUID, User> invitees = new LinkedHashMap<>();
+        for (UUID userId : userIds) {
+            User invitee = findUserById(userId);
+            invitees.putIfAbsent(invitee.getId(), invitee);
+        }
+        for (String email : emails) {
+            // 이메일이 null 인 사용자는 절대 매칭되지 않는다 (빈 값은 위에서 걸러짐).
+            List<User> matches = userRepository.findAllByEmail(email);
+            if (matches.isEmpty()) {
+                throw new ResourceNotFoundException("사용자", email);
+            }
+            User invitee = matches.get(0);
+            invitees.putIfAbsent(invitee.getId(), invitee);
+        }
 
-            // 이미 멤버인지 확인
-            boolean alreadyMember = groupMemberRepository.findByGroup(group).stream()
-                    .anyMatch(m -> m.getUser().getId().equals(invitee.getId()));
+        for (User invitee : invitees.values()) {
+            if (isMember(groupId, invitee.getId())) continue;
+            if (groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)) continue;
 
-            if (alreadyMember) continue;
-
-            // 이미 대기 중인 초대 있는지 확인
-            groupInvitationRepository.findByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)
-                    .ifPresent(i -> {
-                        throw new RuntimeException("Invitation already pending for " + email);
-                    });
-
-            GroupInvitation invitation = GroupInvitation.builder()
+            groupInvitationRepository.save(GroupInvitation.builder()
                     .group(group)
                     .inviter(inviter)
                     .invitee(invitee)
                     .status(InvitationStatus.PENDING)
-                    .build();
-
-            groupInvitationRepository.save(invitation);
+                    .build());
         }
     }
 
     @Transactional(readOnly = true)
     public List<GroupInvitationResponse> getMyInvitations(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = findUserById(userId);
 
         return groupInvitationRepository.findByInviteeAndStatus(user, InvitationStatus.PENDING).stream()
                 .map(i -> GroupInvitationResponse.builder()
@@ -286,60 +295,64 @@ public class GroupService {
 
     @Transactional
     public void acceptInvitation(UUID userId, UUID invitationId) {
-        GroupInvitation invitation = groupInvitationRepository.findById(invitationId)
-                .orElseThrow(() -> new RuntimeException("Invitation not found"));
-
-        if (!invitation.getInvitee().getId().equals(userId)) {
-            throw new RuntimeException("Unauthorized invitation access");
-        }
+        GroupInvitation invitation = findPendingInvitation(userId, invitationId);
 
         invitation.accept();
 
-        // 멤버로 추가
-        GroupMember member = GroupMember.builder()
-                .group(invitation.getGroup())
-                .user(invitation.getInvitee())
-                .build();
-        groupMemberRepository.save(member);
+        // 이미 멤버라면(초대 코드로 먼저 가입한 경우 등) 멤버십을 또 만들지 않는다.
+        if (!isMember(invitation.getGroup().getId(), userId)) {
+            groupMemberRepository.save(GroupMember.builder()
+                    .group(invitation.getGroup())
+                    .user(invitation.getInvitee())
+                    .build());
+        }
     }
 
     @Transactional
     public void rejectInvitation(UUID userId, UUID invitationId) {
-        GroupInvitation invitation = groupInvitationRepository.findById(invitationId)
-                .orElseThrow(() -> new RuntimeException("Invitation not found"));
-
-        if (!invitation.getInvitee().getId().equals(userId)) {
-            throw new RuntimeException("Unauthorized invitation access");
-        }
-
+        GroupInvitation invitation = findPendingInvitation(userId, invitationId);
         invitation.reject();
     }
 
+    /** 본인에게 온 초대이고 아직 PENDING 상태일 때만 반환합니다. */
+    private GroupInvitation findPendingInvitation(UUID userId, UUID invitationId) {
+        GroupInvitation invitation = groupInvitationRepository.findById(invitationId)
+                .orElseThrow(() -> new ResourceNotFoundException("초대", invitationId));
+
+        if (!invitation.getInvitee().getId().equals(userId)) {
+            throw new UnauthorizedAccessException("본인에게 온 초대만 처리할 수 있습니다.");
+        }
+        if (invitation.getStatus() != InvitationStatus.PENDING) {
+            throw new ConflictException("이미 처리된 초대입니다.");
+        }
+        return invitation;
+    }
+
+    /** 그룹 정보(이름/설명/테마/이미지) 수정은 그룹장만 가능합니다. */
     @Transactional
     public GroupResponse updateGroup(UUID userId, UUID groupId, GroupRequest request,
                                      org.springframework.web.multipart.MultipartFile image,
                                      org.springframework.web.multipart.MultipartFile bgImage) {
-        Group group = groupRepository.findById(groupId)
-                .orElseThrow(() -> new RuntimeException("Group not found"));
-
-        // 멤버인지 확인
-        boolean isMember = groupMemberRepository.findByGroup(group).stream()
-                .anyMatch(m -> m.getUser().getId().equals(userId));
-
-        if (!isMember) {
-            throw new RuntimeException("Unauthorized to update group info");
-        }
+        Group group = findGroupById(groupId);
+        requireOwner(group, userId, "그룹장만 그룹 정보를 수정할 수 있습니다.");
 
         if (request.getName() != null) group.setName(request.getName());
         if (request.getDescription() != null) group.setDescription(request.getDescription());
         if (request.getColorTheme() != null) group.setColorTheme(request.getColorTheme());
 
-        if (image != null && !image.isEmpty()) {
-            group.setProfileImage("/uploads/" + fileService.storeFile(image));
-        }
+        // 두 파일을 모두 저장(검증)한 뒤에 교체하고, 이전 파일은 커밋 후 삭제한다.
+        String newProfileImage = (image != null && !image.isEmpty()) ? "/uploads/" + fileService.storeFile(image) : null;
+        String newBackgroundImage = (bgImage != null && !bgImage.isEmpty()) ? "/uploads/" + fileService.storeFile(bgImage) : null;
 
-        if (bgImage != null && !bgImage.isEmpty()) {
-            group.setBackgroundImage("/uploads/" + fileService.storeFile(bgImage));
+        if (newProfileImage != null) {
+            String previous = group.getProfileImage();
+            group.setProfileImage(newProfileImage);
+            fileService.deleteFileAfterCommit(previous);
+        }
+        if (newBackgroundImage != null) {
+            String previous = group.getBackgroundImage();
+            group.setBackgroundImage(newBackgroundImage);
+            fileService.deleteFileAfterCommit(previous);
         }
 
         return convertToResponse(group);
@@ -347,34 +360,124 @@ public class GroupService {
 
     @Transactional
     public void kickMember(UUID ownerId, UUID groupId, UUID targetMemberId) {
-        Group group = groupRepository.findById(groupId)
-                .orElseThrow(() -> new ResourceNotFoundException("그룹", groupId));
-
-        if (!group.getCreatedBy().getId().equals(ownerId)) {
-            throw new UnauthorizedAccessException("그룹장만 멤버를 내보낼 수 있습니다.");
-        }
+        Group group = findGroupById(groupId);
+        requireOwner(group, ownerId, "그룹장만 멤버를 내보낼 수 있습니다.");
 
         if (ownerId.equals(targetMemberId)) {
-            throw new RuntimeException("자기 자신을 내보낼 수 없습니다.");
+            throw new BadRequestException("자기 자신을 내보낼 수 없습니다.");
         }
 
-        User targetUser = userRepository.findById(targetMemberId)
-                .orElseThrow(() -> new ResourceNotFoundException("사용자", targetMemberId));
+        List<GroupMember> memberships = groupMemberRepository.findAllByGroup_IdAndUser_Id(groupId, targetMemberId);
+        if (memberships.isEmpty()) {
+            throw new ResourceNotFoundException("그룹 멤버", targetMemberId);
+        }
+        groupMemberRepository.deleteAll(memberships);
+        removeFromGroupSchedules(groupId, targetMemberId);
 
-        GroupMember member = groupMemberRepository.findByGroupAndUser(group, targetUser)
-                .orElseThrow(() -> new ResourceNotFoundException("그룹 멤버", targetMemberId));
+        // 내보낸 멤버가 알고 있는 초대 코드로 다시 들어오지 못하도록 코드를 새로 발급한다.
+        group.setInviteCode(generateUniqueInviteCode());
+    }
 
-        groupMemberRepository.delete(member);
+    /** 그룹 나가기. 그룹장은 나갈 수 없습니다 (그룹을 삭제해야 함). */
+    @Transactional
+    public void leaveGroup(UUID userId, UUID groupId) {
+        Group group = findGroupById(groupId);
+
+        if (group.getCreatedBy().getId().equals(userId)) {
+            throw new BadRequestException("그룹장은 그룹을 나갈 수 없습니다. 그룹을 삭제해주세요.");
+        }
+
+        List<GroupMember> memberships = groupMemberRepository.findAllByGroup_IdAndUser_Id(groupId, userId);
+        if (memberships.isEmpty()) {
+            throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
+        }
+        groupMemberRepository.deleteAll(memberships);
+        removeFromGroupSchedules(groupId, userId);
+    }
+
+    /**
+     * 그룹 삭제 (그룹장 전용).
+     * 멤버/초대/토픽(댓글·AI 분석 포함)은 삭제하고,
+     * 그룹 메모와 그룹 일정은 삭제하지 않고 그룹에서 분리하여(group_id = NULL) 작성자의 개인 메모/일정으로 남깁니다.
+     */
+    @Transactional
+    public void deleteGroup(UUID userId, UUID groupId) {
+        Group group = findGroupById(groupId);
+        requireOwner(group, userId, "그룹장만 그룹을 삭제할 수 있습니다.");
+
+        for (Memo memo : memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId)) {
+            memo.detachFromGroup();
+        }
+        for (Schedule schedule : scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId)) {
+            schedule.detachFromGroup();
+        }
+
+        List<GroupTopic> topics = groupTopicRepository.findAllByGroup(group);
+        groupTopicRepository.deleteAll(topics); // 댓글, AI 분석 결과는 cascade 로 함께 삭제
+
+        groupInvitationRepository.deleteAllByGroup(group);
+        groupMemberRepository.deleteAllByGroup(group);
+
+        String profileImage = group.getProfileImage();
+        String backgroundImage = group.getBackgroundImage();
+
+        // 자식 행 삭제를 먼저 반영한 뒤 그룹을 삭제한다.
+        groupRepository.flush();
+        groupRepository.delete(group);
+
+        fileService.deleteFileAfterCommit(profileImage);
+        fileService.deleteFileAfterCommit(backgroundImage);
+    }
+
+    // ─── Internal Helpers ──────────────────────────────────────────
+
+    private Group findGroupById(UUID groupId) {
+        return groupRepository.findById(groupId)
+                .orElseThrow(() -> new ResourceNotFoundException("그룹", groupId));
+    }
+
+    private User findUserById(UUID userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+    }
+
+    private boolean isMember(UUID groupId, UUID userId) {
+        return groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId);
+    }
+
+    private void requireMember(UUID groupId, UUID userId) {
+        if (!isMember(groupId, userId)) {
+            throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
+        }
+    }
+
+    private void requireOwner(Group group, UUID userId, String message) {
+        if (!group.getCreatedBy().getId().equals(userId)) {
+            throw new UnauthorizedAccessException(message);
+        }
+    }
+
+    /** 그룹을 떠난 사용자를 그 그룹 일정의 참여자 목록에서 제거합니다. */
+    private void removeFromGroupSchedules(UUID groupId, UUID userId) {
+        for (Schedule schedule : scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId)) {
+            if (schedule.getParticipants() != null) {
+                schedule.getParticipants().removeIf(p -> p.getId().equals(userId));
+            }
+        }
     }
 
     @Transactional(readOnly = true)
     protected GroupResponse convertToResponse(Group group) {
-        List<GroupMember> memberships = groupMemberRepository.findByGroup(group);
-        List<GroupResponse.MemberResponse> memberResponses = memberships.stream()
-                .map(m -> GroupResponse.MemberResponse.builder()
-                        .id(m.getUser().getId())
-                        .nickname(m.getUser().getNickname())
-                        .profileImage(m.getUser().getProfileImage())
+        // 과거 데이터에 중복 멤버십 행이 있어도 멤버가 두 번 나오지 않도록 사용자 기준으로 중복을 제거한다.
+        Map<UUID, User> members = new LinkedHashMap<>();
+        for (GroupMember membership : groupMemberRepository.findByGroup(group)) {
+            members.putIfAbsent(membership.getUser().getId(), membership.getUser());
+        }
+        List<GroupResponse.MemberResponse> memberResponses = members.values().stream()
+                .map(u -> GroupResponse.MemberResponse.builder()
+                        .id(u.getId())
+                        .nickname(u.getNickname())
+                        .profileImage(u.getProfileImage())
                         .build())
                 .collect(Collectors.toList());
 

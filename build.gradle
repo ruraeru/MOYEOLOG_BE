@@ -47,6 +47,8 @@ dependencies {
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.security:spring-security-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	// 테스트 전용 인메모리 DB (운영 MySQL 에 연결하지 않고 컨텍스트/통합 테스트 실행)
+	testRuntimeOnly 'com.h2database:h2'
 }
 
 tasks.named('test') {

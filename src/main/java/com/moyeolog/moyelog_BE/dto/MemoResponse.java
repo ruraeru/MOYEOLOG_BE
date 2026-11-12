@@ -23,7 +23,8 @@ public class MemoResponse {
     private UUID groupId;
     private List<String> tags;
     private MemoInsightResponse insight;
-    private Boolean isFavorite;
+    private Boolean isFavorite; // 요청한 사용자 기준
+    private List<SharedUserResponse> sharedWith; // 작성자에게만 채워짐 (그 외에는 빈 목록)
     private List<MemoSummaryResponse> taggedMemos;
     private List<ScheduleSummaryResponse> taggedSchedules;
     private LocalDateTime createdAt;
@@ -37,6 +38,17 @@ public class MemoResponse {
     public static class MemoSummaryResponse {
         private UUID id;
         private String title;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class SharedUserResponse {
+        private UUID id;
+        private String nickname;
+        private String profileImage;
     }
 
     @Getter

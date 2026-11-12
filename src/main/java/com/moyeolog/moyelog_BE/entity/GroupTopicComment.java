@@ -26,7 +26,7 @@ public class GroupTopicComment {
     @JoinColumn(name = "author_id", nullable = false)
     private User author;
 
-    @Column(columnDefinition = "TEXT", nullable = false)
+    @Column(columnDefinition = "MEDIUMTEXT", nullable = false)
     private String content;
 
     @Column(name = "created_at", updatable = false)

@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.controller;
 import com.moyeolog.moyelog_BE.dto.UserUpdateRequest;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.service.UserService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -26,7 +27,7 @@ public class UserController {
     @PutMapping(value = "/me", consumes = {"multipart/form-data"})
     public ResponseEntity<User> updateMe(
             @AuthenticationPrincipal String userId,
-            @RequestPart("user") UserUpdateRequest request,
+            @Valid @RequestPart("user") UserUpdateRequest request,
             @RequestPart(value = "image", required = false) MultipartFile image) {
         return ResponseEntity.ok(userService.updateUser(UUID.fromString(userId), request, image));
     }

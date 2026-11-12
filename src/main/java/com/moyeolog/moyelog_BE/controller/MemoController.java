@@ -65,9 +65,19 @@ public class MemoController {
     public ResponseEntity<Void> share(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id,
-            @RequestBody MemoShareRequest request) {
+            @Valid @RequestBody MemoShareRequest request) {
         memoService.shareMemo(UUID.fromString(userId), id, request);
         return ResponseEntity.ok().build();
+    }
+
+    /** 메모 공유 해제: 작성자가 공유 대상을 제거 (공유받은 본인이 스스로 해제하는 것도 허용) */
+    @DeleteMapping("/{id}/share/{targetUserId}")
+    public ResponseEntity<Void> unshare(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @PathVariable UUID targetUserId) {
+        memoService.unshareMemo(UUID.fromString(userId), id, targetUserId);
+        return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/{id}/favorite")
@@ -82,7 +92,7 @@ public class MemoController {
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id,
             @RequestBody Map<String, List<String>> request) {
-        return ResponseEntity.ok(memoService.updateTags(UUID.fromString(userId), id, request.get("tags")));
+        return ResponseEntity.ok(memoService.updateTags(UUID.fromString(userId), id, request != null ? request.get("tags") : null));
     }
 
     @PostMapping("/{id}/analyze")
@@ -96,6 +106,8 @@ public class MemoController {
     public ResponseEntity<MemoInsightResponse> getInsight(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id) {
-        return ResponseEntity.ok(memoService.getMemoInsight(UUID.fromString(userId), id));
+        MemoInsightResponse insight = memoService.getMemoInsight(UUID.fromString(userId), id);
+        // 아직 분석 결과가 없으면 204 No Content
+        return insight != null ? ResponseEntity.ok(insight) : ResponseEntity.noContent().build();
     }
 }

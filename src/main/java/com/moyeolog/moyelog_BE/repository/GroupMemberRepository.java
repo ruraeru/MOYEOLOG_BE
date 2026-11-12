@@ -14,5 +14,10 @@ import java.util.UUID;
 public interface GroupMemberRepository extends JpaRepository<GroupMember, UUID> {
     List<GroupMember> findByUser(User user);
     List<GroupMember> findByGroup(Group group);
-    java.util.Optional<GroupMember> findByGroupAndUser(Group group, User user);
+    // (group, user) 조회는 과거 데이터에 중복 행이 있어도 예외가 나지 않도록 exists / 목록 조회만 사용한다.
+    boolean existsByGroup_IdAndUser_Id(UUID groupId, UUID userId);
+
+    List<GroupMember> findAllByGroup_IdAndUser_Id(UUID groupId, UUID userId);
+
+    void deleteAllByGroup(Group group);
 }

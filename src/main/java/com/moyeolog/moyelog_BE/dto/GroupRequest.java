@@ -17,5 +17,6 @@ public class GroupRequest {
     @Size(max = 255, message = "설명은 255자를 초과할 수 없습니다.")
     private String description;
     
+    @Size(max = 100, message = "색상 테마 값이 너무 깁니다.")
     private String colorTheme;
 }

@@ -16,7 +16,7 @@ import java.util.UUID;
 public interface FriendRepository extends JpaRepository<Friend, UUID> {
     
     // 수락된 친구 목록 (내가 신청했거나 받았거나)
-    @Query("SELECT f FROM Friend f WHERE (f.requester = :user OR f.receiver = :user) AND f.status = 'ACCEPTED'")
+    @Query("SELECT f FROM Friend f WHERE (f.requester = :user OR f.receiver = :user) AND f.status = com.moyeolog.moyelog_BE.enums.FriendStatus.ACCEPTED")
     List<Friend> findAcceptedFriends(@Param("user") User user);
 
     // 내가 받은 요청 목록
@@ -24,5 +24,10 @@ public interface FriendRepository extends JpaRepository<Friend, UUID> {
 
     // 이미 존재하는 관계 확인 (신청 중이거나 이미 친구)
     @Query("SELECT f FROM Friend f WHERE (f.requester = :u1 AND f.receiver = :u2) OR (f.requester = :u2 AND f.receiver = :u1)")
-    Optional<Friend> findAnyRelationship(@Param("u1") User u1, @Param("u2") User u2);
+    List<Friend> findAnyRelationship(@Param("u1") User u1, @Param("u2") User u2);
+
+    // 두 사용자가 수락된 친구 관계인지 확인
+    @Query("SELECT COUNT(f) > 0 FROM Friend f WHERE f.status = com.moyeolog.moyelog_BE.enums.FriendStatus.ACCEPTED " +
+            "AND ((f.requester.id = :a AND f.receiver.id = :b) OR (f.requester.id = :b AND f.receiver.id = :a))")
+    boolean areFriends(@Param("a") UUID a, @Param("b") UUID b);
 }

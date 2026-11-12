@@ -63,14 +63,20 @@ public class Schedule {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    public void update(String title, String description, LocalDateTime startTime, LocalDateTime endTime, String location, List<Memo> taggedMemos, List<User> participants) {
+    public void update(String title, String description, LocalDateTime startTime, LocalDateTime endTime, String location, UUID groupId, List<Memo> taggedMemos, List<User> participants) {
         this.title = title;
         this.description = description;
         this.startTime = startTime;
         this.endTime = endTime;
         this.location = location;
+        this.groupId = groupId;
         this.taggedMemos = taggedMemos;
         this.participants = participants;
+    }
+
+    /** 그룹이 삭제될 때 그룹 일정을 작성자의 개인 일정으로 되돌립니다. */
+    public void detachFromGroup() {
+        this.groupId = null;
     }
 
     @PrePersist

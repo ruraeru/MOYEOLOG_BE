@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -28,6 +29,10 @@ public class GroupTopicInsight {
     @Column(columnDefinition = "TEXT")
     private String summary;
 
+    @Convert(converter = MemoAiInsight.StringListConverter.class)
+    @Column(columnDefinition = "JSON")
+    private List<String> keywords;
+
     @Column(name = "analyzed_at")
     private LocalDateTime analyzedAt;
 
@@ -41,8 +46,9 @@ public class GroupTopicInsight {
         analyzedAt = LocalDateTime.now();
     }
 
-    public void update(String ocrText, String summary) {
+    public void update(String ocrText, String summary, List<String> keywords) {
         this.ocrText = ocrText;
         this.summary = summary;
+        this.keywords = keywords;
     }
 }

@@ -33,15 +33,15 @@ public class Memo {
     @Column(nullable = false)
     private String title;
 
-    @Column(columnDefinition = "TEXT")
+    // TEXT(64KB)는 한글 약 2만 자에서 넘치므로 MEDIUMTEXT(16MB) 사용
+    @Column(columnDefinition = "MEDIUMTEXT")
     private String content;
 
     @Column(name = "image_url", columnDefinition = "LONGTEXT")
     private String imageUrl;
 
-    @Column(name = "is_favorite")
-    @Builder.Default
-    private Boolean isFavorite = false;
+    // 즐겨찾기는 사용자별 정보이므로 MemoFavorite(memo_favorites) 로 옮겼습니다.
+    // 기존 memos.is_favorite 컬럼은 더 이상 매핑하지 않습니다.
 
     @ManyToMany
     @JoinTable(
@@ -64,7 +64,6 @@ public class Memo {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
-        if (isFavorite == null) isFavorite = false;
     }
 
     @PreUpdate
@@ -80,11 +79,8 @@ public class Memo {
         this.taggedMemos = taggedMemos;
     }
 
-    public void toggleFavorite() {
-        if (this.isFavorite == null) {
-            this.isFavorite = true;
-        } else {
-            this.isFavorite = !this.isFavorite;
-        }
+    /** 그룹이 삭제될 때 그룹 메모를 작성자의 개인 메모로 되돌립니다. */
+    public void detachFromGroup() {
+        this.groupId = null;
     }
 }

@@ -14,5 +14,7 @@ import java.util.UUID;
 @Repository
 public interface GroupInvitationRepository extends JpaRepository<GroupInvitation, UUID> {
     List<GroupInvitation> findByInviteeAndStatus(User invitee, InvitationStatus status);
-    Optional<GroupInvitation> findByGroupAndInviteeAndStatus(Group group, User invitee, InvitationStatus status);
+    boolean existsByGroupAndInviteeAndStatus(Group group, User invitee, InvitationStatus status);
+
+    void deleteAllByGroup(Group group);
 }

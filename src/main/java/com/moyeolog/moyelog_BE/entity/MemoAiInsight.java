@@ -26,7 +26,7 @@ public class MemoAiInsight {
     @JoinColumn(name = "memo_id")
     private Memo memo;
 
-    @Column(name = "ocr_text", columnDefinition = "TEXT")
+    @Column(name = "ocr_text", columnDefinition = "MEDIUMTEXT")
     private String ocrText;
 
     @Column(columnDefinition = "TEXT")
@@ -57,6 +57,9 @@ public class MemoAiInsight {
 
         @Override
         public String convertToDatabaseColumn(List<String> attribute) {
+            if (attribute == null) {
+                return "[]";
+            }
             try {
                 return mapper.writeValueAsString(attribute);
             } catch (Exception e) {
@@ -66,8 +69,12 @@ public class MemoAiInsight {
 
         @Override
         public List<String> convertToEntityAttribute(String dbData) {
+            if (dbData == null || dbData.isBlank()) {
+                return List.of();
+            }
             try {
-                return mapper.readValue(dbData, new TypeReference<List<String>>() {});
+                List<String> values = mapper.readValue(dbData, new TypeReference<List<String>>() {});
+                return values != null ? values : List.of();
             } catch (Exception e) {
                 return List.of();
             }
