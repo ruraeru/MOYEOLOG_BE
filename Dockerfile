@@ -26,6 +26,16 @@ RUN --mount=type=cache,target=/root/.gradle \
 FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
 
-COPY --from=build /app/build/libs/*.jar app.jar
+# 루트가 아닌 전용 사용자(uid/gid 1001)로 실행한다.
+# 업로드 디렉터리(/app/uploads)는 이 사용자 소유로 미리 만들어 둔다.
+# (볼륨을 마운트하는 경우 볼륨 안의 기존 파일도 1001:1001 소유여야 쓸 수 있다.)
+RUN addgroup -S -g 1001 moyeolog \
+    && adduser -S -D -H -u 1001 -G moyeolog moyeolog \
+    && mkdir -p /app/uploads \
+    && chown -R 1001:1001 /app
+
+COPY --from=build --chown=1001:1001 /app/build/libs/*.jar app.jar
+
+USER 1001:1001
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]

@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.service;
 
 import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.entity.*;
+import com.moyeolog.moyelog_BE.exception.BadRequestException;
 import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.*;
@@ -28,6 +29,9 @@ public class GroupTopicService {
     private final UserRepository userRepository;
     private final GeminiService geminiService;
 
+    private static final java.util.regex.Pattern DATA_URL_PREFIX =
+            java.util.regex.Pattern.compile("^data:image/(png|jpeg|gif|webp);base64,");
+
     @Transactional(readOnly = true)
     public List<GroupTopicResponse> getTopicsByGroup(UUID userId, UUID groupId) {
         Group group = findGroupById(groupId);
@@ -43,13 +47,15 @@ public class GroupTopicService {
         Group group = findGroupById(groupId);
         validateMember(group, userId);
         User author = findUserById(userId);
+        validateContent(request.getTitle(), request.getContent());
+        String imageUrl = validateImageUrl(request.getImageUrl());
 
         GroupTopic topic = GroupTopic.builder()
                 .group(group)
                 .author(author)
                 .title(request.getTitle())
                 .content(request.getContent())
-                .imageUrl(request.getImageUrl())
+                .imageUrl(imageUrl)
                 .build();
 
         return convertToResponse(groupTopicRepository.save(topic));
@@ -79,7 +85,10 @@ public class GroupTopicService {
         GroupTopic topic = findTopicById(topicId);
         validateAuthor(topic, userId);
 
-        topic.update(request.getTitle(), request.getContent(), request.getImageUrl());
+        validateContent(request.getTitle(), request.getContent());
+        String imageUrl = validateImageUrl(request.getImageUrl());
+
+        topic.update(request.getTitle(), request.getContent(), imageUrl);
         return convertToResponse(topic);
     }
 
@@ -95,6 +104,7 @@ public class GroupTopicService {
         GroupTopic topic = findTopicById(topicId);
         validateMember(topic.getGroup(), userId);
         User author = findUserById(userId);
+        validateCommentContent(request.getContent());
 
         GroupTopicComment comment = GroupTopicComment.builder()
                 .topic(topic)
@@ -110,6 +120,7 @@ public class GroupTopicService {
         GroupTopicComment comment = findCommentById(commentId);
         validateCommentAuthor(comment, userId);
 
+        validateCommentContent(request.getContent());
         comment.update(request.getContent());
         return convertToCommentResponse(comment);
     }
@@ -133,16 +144,21 @@ public class GroupTopicService {
         // For this turn, I'll assume analyzeTopic logic is here or calling a refactored geminiService.
         
         Map<String, Object> result = geminiService.analyzeTopic(topic);
-        
+        String ocrText = textOf(result, "ocrText");
+        String summary = textOf(result, "summary");
+        // Gemini 가 keywords 를 null 로 돌려줘도 빈 목록으로 처리한다.
+        List<String> keywords = GeminiService.toKeywords(result != null ? result.get("keywords") : null);
+
         GroupTopicInsight insight = groupTopicInsightRepository.findById(topicId)
                 .map(existing -> {
-                    existing.update((String) result.get("ocrText"), (String) result.get("summary"));
+                    existing.update(ocrText, summary, keywords);
                     return existing;
                 })
                 .orElseGet(() -> GroupTopicInsight.builder()
                         .topic(topic)
-                        .ocrText((String) result.get("ocrText"))
-                        .summary((String) result.get("summary"))
+                        .ocrText(ocrText)
+                        .summary(summary)
+                        .keywords(keywords)
                         .build());
 
         return convertToInsightResponse(groupTopicInsightRepository.save(insight));
@@ -171,10 +187,64 @@ public class GroupTopicService {
     }
 
     private void validateMember(Group group, UUID userId) {
-        User user = findUserById(userId);
-        if (groupMemberRepository.findByGroupAndUser(group, user).isEmpty()) {
+        if (!groupMemberRepository.existsByGroup_IdAndUser_Id(group.getId(), userId)) {
             throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
         }
+    }
+
+    private void validateContent(String title, String content) {
+        if (title == null || title.isBlank()) {
+            throw new BadRequestException("토픽 제목은 필수입니다.");
+        }
+        if (content == null || content.isBlank()) {
+            throw new BadRequestException("토픽 내용은 필수입니다.");
+        }
+    }
+
+    private void validateCommentContent(String content) {
+        if (content == null || content.isBlank()) {
+            throw new BadRequestException("댓글 내용은 필수입니다.");
+        }
+    }
+
+    /**
+     * 토픽 이미지는 다음 세 가지만 허용합니다 (그 외는 400).
+     * - null (빈 문자열도 null 로 취급)
+     * - data:image/(png|jpeg|gif|webp);base64,<Base64>
+     * - /uploads/<평범한 파일 이름>
+     */
+    static String validateImageUrl(String imageUrl) {
+        if (imageUrl == null || imageUrl.isBlank()) {
+            return null;
+        }
+        if (FileService.isUploadUrl(imageUrl)) {
+            return imageUrl;
+        }
+        java.util.regex.Matcher matcher = DATA_URL_PREFIX.matcher(imageUrl);
+        if (matcher.lookingAt() && isBase64(imageUrl, matcher.end())) {
+            return imageUrl;
+        }
+        throw new BadRequestException("허용되지 않는 이미지 형식입니다.");
+    }
+
+    private static boolean isBase64(String value, int from) {
+        if (from >= value.length()) {
+            return false;
+        }
+        for (int i = from; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '+' || c == '/' || c == '=';
+            if (!ok) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String textOf(Map<String, Object> result, String key) {
+        Object value = result != null ? result.get(key) : null;
+        return value != null ? value.toString() : "";
     }
 
     private void validateAuthor(GroupTopic topic, UUID userId) {
@@ -222,6 +292,7 @@ public class GroupTopicService {
         return MemoInsightResponse.builder()
                 .ocrText(insight.getOcrText())
                 .summary(insight.getSummary())
+                .keywords(insight.getKeywords() != null ? insight.getKeywords() : List.of())
                 .analyzedAt(insight.getAnalyzedAt())
                 .build();
     }

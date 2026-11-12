@@ -34,8 +34,23 @@ logging:
     org.hibernate.SQL: DEBUG
 
 jwt:
-  secret: your_jwt_secret_here
-  expiration: 86400000 # 24 hours
+  secret: your_jwt_secret_here # Base64 로 인코딩된 HMAC 키 (환경변수 JWT_SECRET)
+  expiration: 86400000 # 액세스 토큰 유효기간(ms), 24 hours (JWT_EXPIRATION)
+  refresh-expiration: 604800000 # 리프레시 토큰 유효기간(ms), 7 days (JWT_REFRESH_EXPIRATION)
+  # 토큰 종류 클레임(typ) 도입 이전에 발급된 토큰을 받아들일지 여부.
+  # 배포 후 리프레시 토큰 유효기간(7일)이 지나면 false 로 바꿔도 됩니다. (JWT_ACCEPT_LEGACY_TOKENS)
+  accept-legacy-tokens: true
+
+# 프론트엔드 서버(NextAuth)와 공유하는 비밀값. POST /api/auth/sync 의 X-Internal-Secret 헤더와 비교합니다.
+# 비어 있으면 /api/auth/sync 는 항상 401 입니다. (환경변수 INTERNAL_API_SECRET)
+internal:
+  api-secret: ${INTERNAL_API_SECRET:}
+
+file:
+  upload-dir: uploads # 업로드 이미지 저장 경로 (FILE_UPLOAD_DIR). 컨테이너에서는 /app/uploads
+
+cors:
+  allowed-origins: https://moyeolog.ruraeru.xyz # 쉼표로 여러 개 지정 가능 (CORS_ALLOWED_ORIGINS)
 
 gemini:
   api:

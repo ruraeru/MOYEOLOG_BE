@@ -20,14 +20,16 @@ import java.util.*;
 @Slf4j
 public class GeminiService {
 
-    @Value("${gemini.api.key}")
+    @Value("${gemini.api.key:}")
     private String apiKey;
 
     private final RestTemplate restTemplate;
     private final FileService fileService;
     private final ObjectMapper objectMapper;
 
-    private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent?key=";
+    private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent";
+    private static final String API_KEY_HEADER = "x-goog-api-key";
+    private static final String GENERIC_ERROR_MESSAGE = "AI 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.";
 
     public Map<String, Object> analyzeMemo(Memo memo) {
         return analyze(memo.getContent(), memo.getImageUrl(), memo.getId().toString());
@@ -38,6 +40,9 @@ public class GeminiService {
     }
 
     private Map<String, Object> analyze(String content, String imageUrl, String id) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 분석 기능이 설정되지 않았습니다.");
+        }
         String prompt = "You are an AI assistant analyzing a user's memo or topic. " +
                 "Analyze the following text and image (if provided). " +
                 "1. OCR: Extract all readable text from the image. If no image, return empty string. " +
@@ -58,20 +63,15 @@ public class GeminiService {
             parts.add(textPart);
 
             // 2. Image Part (if exists)
-            String base64Image = fileService.getFileAsBase64(imageUrl);
-            if (base64Image != null) {
-                log.info("[Gemini] Including image in analysis: {}", imageUrl);
+// 업로드 디렉터리 안의 실제 이미지 파일만 전송한다 (경로 검증은 FileService 가 담당).
+            FileService.ImageData image = fileService.loadImage(imageUrl).orElse(null);
+            if (image != null) {
+                log.info("[Gemini] Including image in analysis for ID: {}", id);
                 Map<String, Object> imagePart = new HashMap<>();
                 Map<String, Object> inlineData = new HashMap<>();
                 imagePart.put("inline_data", inlineData);
-                
-                String mimeType = "image/png";
-                if (imageUrl.toLowerCase().endsWith(".jpg") || imageUrl.toLowerCase().endsWith(".jpeg")) {
-                    mimeType = "image/jpeg";
-                }
-                
-                inlineData.put("mime_type", mimeType);
-                inlineData.put("data", base64Image);
+                inlineData.put("mime_type", image.mimeType());
+                inlineData.put("data", image.base64());
                 parts.add(imagePart);
             }
 
@@ -81,6 +81,8 @@ public class GeminiService {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            // API 키는 URL(쿼리 스트링)이 아니라 헤더로 보낸다 → 예외 메시지/로그에 키가 남지 않는다.
+            headers.set(API_KEY_HEADER, apiKey);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
             int maxRetries = 3;
@@ -90,7 +92,7 @@ public class GeminiService {
             for (int attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
                     log.info("[Gemini] Calling Gemini API for ID: {} (Attempt {}/{})", id, attempt, maxRetries);
-                    response = restTemplate.postForObject(GEMINI_API_URL + apiKey, entity, String.class);
+                    response = restTemplate.postForObject(GEMINI_API_URL, entity, String.class);
                     log.info("[Gemini] API Response received successfully");
                     break; // Success, exit retry loop
                 } catch (org.springframework.web.client.HttpStatusCodeException e) {
@@ -114,10 +116,15 @@ public class GeminiService {
             }
             
             return parseGeminiResponse(response);
-
+        } catch (com.moyeolog.moyelog_BE.exception.AiAnalysisException e) {
+            throw e;
+        } catch (org.springframework.web.client.HttpStatusCodeException e) {
+            // 상위 API 의 응답 본문/URL 은 클라이언트에 돌려주지 않고 고정 문구만 사용한다.
+            log.error("[Gemini] AI 분석 실패 (ID: {}): upstream status {}", id, e.getStatusCode().value());
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
         } catch (Exception e) {
-            log.error("[Gemini] AI 분석 실패: {}", e.getMessage(), e);
-            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 분석 중 오류가 발생했습니다: " + e.getMessage());
+            log.error("[Gemini] AI 분석 실패 (ID: {}): {}", id, e.getClass().getSimpleName(), e);
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
         }
     }
 
@@ -144,10 +151,44 @@ public class GeminiService {
                 jsonStr = jsonStr.substring(0, jsonStr.lastIndexOf("```")).trim();
             }
 
-            return objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            Map<String, Object> parsed = objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            return normalize(parsed);
         } catch (Exception e) {
             log.error("[Gemini] JSON Parsing Failed. Raw text: {}", textResponse);
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 응답 형식이 올바르지 않습니다.");
         }
+    }
+
+    /** Gemini 가 돌려준 값의 타입을 고정한다: ocrText/summary 는 문자열, keywords 는 null 이 아닌 문자열 목록. */
+    private Map<String, Object> normalize(Map<String, Object> parsed) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("ocrText", asText(parsed != null ? parsed.get("ocrText") : null));
+        result.put("summary", asText(parsed != null ? parsed.get("summary") : null));
+        result.put("keywords", toKeywords(parsed != null ? parsed.get("keywords") : null));
+        return result;
+    }
+
+    private static String asText(Object value) {
+        if (value == null) return "";
+        if (value instanceof List<?> list) {
+            return list.stream().filter(java.util.Objects::nonNull).map(Object::toString)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+        }
+        return value.toString();
+    }
+
+    /** null 이거나 목록이 아닌 값은 빈 목록으로 바꾼다. */
+    public static List<String> toKeywords(Object value) {
+        List<String> keywords = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !item.toString().isBlank()) {
+                    keywords.add(item.toString().trim());
+                }
+            }
+        } else if (value instanceof String text && !text.isBlank()) {
+            keywords.add(text.trim());
+        }
+        return keywords;
     }
 }

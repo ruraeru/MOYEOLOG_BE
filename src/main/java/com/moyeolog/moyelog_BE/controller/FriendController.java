@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.controller;
 import com.moyeolog.moyelog_BE.dto.FriendRequestDto;
 import com.moyeolog.moyelog_BE.dto.FriendResponse;
 import com.moyeolog.moyelog_BE.service.FriendService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -21,7 +22,7 @@ public class FriendController {
     @PostMapping("/request")
     public ResponseEntity<Void> sendRequest(
             @AuthenticationPrincipal String userId,
-            @RequestBody FriendRequestDto request) {
+            @Valid @RequestBody FriendRequestDto request) {
         friendService.sendFriendRequest(UUID.fromString(userId), request.getCustomId());
         return ResponseEntity.ok().build();
     }

@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.controller;
 
 import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.service.GroupTopicService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -28,7 +29,7 @@ public class GroupTopicController {
     public ResponseEntity<GroupTopicResponse> createTopic(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID groupId,
-            @RequestBody GroupTopicRequest request) {
+            @Valid @RequestBody GroupTopicRequest request) {
         return ResponseEntity.ok(groupTopicService.createTopic(UUID.fromString(userId), groupId, request));
     }
 
@@ -43,7 +44,7 @@ public class GroupTopicController {
     public ResponseEntity<GroupTopicResponse> updateTopic(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID topicId,
-            @RequestBody GroupTopicRequest request) {
+            @Valid @RequestBody GroupTopicRequest request) {
         return ResponseEntity.ok(groupTopicService.updateTopic(UUID.fromString(userId), topicId, request));
     }
 
@@ -59,7 +60,7 @@ public class GroupTopicController {
     public ResponseEntity<GroupTopicCommentResponse> createComment(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID topicId,
-            @RequestBody GroupTopicCommentRequest request) {
+            @Valid @RequestBody GroupTopicCommentRequest request) {
         return ResponseEntity.ok(groupTopicService.createComment(UUID.fromString(userId), topicId, request));
     }
 
@@ -67,7 +68,7 @@ public class GroupTopicController {
     public ResponseEntity<GroupTopicCommentResponse> updateComment(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID commentId,
-            @RequestBody GroupTopicCommentRequest request) {
+            @Valid @RequestBody GroupTopicCommentRequest request) {
         return ResponseEntity.ok(groupTopicService.updateComment(UUID.fromString(userId), commentId, request));
     }
 

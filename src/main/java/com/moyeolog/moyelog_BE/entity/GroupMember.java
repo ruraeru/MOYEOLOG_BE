@@ -7,7 +7,9 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "group_members")
+@Table(name = "group_members", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_group_members_group_user", columnNames = {"group_id", "user_id"})
+})
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor

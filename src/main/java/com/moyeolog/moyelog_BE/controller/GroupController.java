@@ -61,8 +61,7 @@ public class GroupController {
 
     @GetMapping("/{id}/schedules")
     public ResponseEntity<List<ScheduleResponse>> getGroupSchedules(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
-        // 실제 운영 환경에서는 멤버 여부 확인 로직 권장
-        return ResponseEntity.ok(scheduleService.getGroupSchedules(id));
+        return ResponseEntity.ok(scheduleService.getGroupSchedules(UUID.fromString(userId), id));
     }
 
     @PostMapping("/join")
@@ -101,6 +100,24 @@ public class GroupController {
             @PathVariable UUID invitationId) {
         groupService.rejectInvitation(UUID.fromString(userId), invitationId);
         return ResponseEntity.ok().build();
+    }
+
+    /** 그룹 나가기 (멤버 본인). 그룹장은 나갈 수 없습니다. */
+    @DeleteMapping("/{id}/members/me")
+    public ResponseEntity<Void> leaveGroup(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id) {
+        groupService.leaveGroup(UUID.fromString(userId), id);
+        return ResponseEntity.noContent().build();
+    }
+
+    /** 그룹 삭제 (그룹장 전용) */
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteGroup(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id) {
+        groupService.deleteGroup(UUID.fromString(userId), id);
+        return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{id}/members/{memberId}")
