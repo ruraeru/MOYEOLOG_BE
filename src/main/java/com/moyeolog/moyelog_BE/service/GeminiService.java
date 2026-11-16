@@ -20,10 +20,7 @@ import java.util.*;
 @Slf4j
 public class GeminiService {
 
-    /** ollama(기본): LLM_BASE_URL 의 Ollama 호환 /api/chat. gemini: Google Gemini API. */
-    @Value("${ai.provider:ollama}")
-    private String provider;
-
+    /** 비어 있으면 Ollama 실패 시 Gemini 로 넘기지 않는다. */
     @Value("${gemini.api.key:}")
     private String apiKey;
 
@@ -53,10 +50,6 @@ public class GeminiService {
     }
 
     private Map<String, Object> analyze(String content, String imageUrl, String id) {
-        boolean ollama = !"gemini".equalsIgnoreCase(provider);
-        if (!ollama && (apiKey == null || apiKey.isBlank())) {
-            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 분석 기능이 설정되지 않았습니다.");
-        }
         String prompt = "You are an AI assistant analyzing a user's memo or topic. " +
                 "Analyze the following text and image (if provided). " +
                 "1. OCR: Extract all readable text from the image. If no image, return empty string. " +
@@ -71,59 +64,67 @@ public class GeminiService {
             if (image != null) {
                 log.info("[AI] Including image in analysis for ID: {}", id);
             }
-            String url;
-            HttpEntity<?> entity;
-            if (ollama) {
-                url = llmBaseUrl.replaceAll("/+$", "") + "/api/chat";
-                entity = ollamaRequest(prompt, image);
-            } else {
-                url = GEMINI_API_URL;
-                entity = geminiRequest(prompt, image);
-            }
-
-            int maxRetries = 3;
-            long waitTime = 2000; // Start with 2 seconds
-
-            byte[] response = null;
-            for (int attempt = 1; attempt <= maxRetries; attempt++) {
-                try {
-                    log.info("[AI] Calling {} for ID: {} (Attempt {}/{})", ollama ? llmModel : "Gemini", id, attempt, maxRetries);
-                    // byte[] 로 받아 UTF-8 로 푼다. Ollama 는 charset 없이 응답할 때가 있어 String 으로 받으면 한글이 깨진다.
-                    response = restTemplate.postForObject(url, entity, byte[].class);
-                    log.info("[AI] API Response received successfully");
-                    break; // Success, exit retry loop
-                } catch (org.springframework.web.client.HttpStatusCodeException e) {
-                    int statusCode = e.getStatusCode().value();
-                    if (statusCode == 503 || statusCode == 429) {
-                        log.warn("[AI] API temporarily unavailable or rate limited ({}). Retrying in {}ms...", statusCode, waitTime);
-                        if (attempt == maxRetries) {
-                            throw e; // Rethrow if max retries reached
-                        }
-                        try {
-                            Thread.sleep(waitTime);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException("Retry interrupted", ie);
-                        }
-                        waitTime *= 2; // Exponential backoff (2s -> 4s -> 8s)
-                    } else {
-                        throw e; // Do not retry for other HTTP errors (like 400 Bad Request)
-                    }
+            try {
+                return call(true, llmBaseUrl.replaceAll("/+$", "") + "/api/chat", ollamaRequest(prompt, image), id);
+            } catch (Exception e) {
+                // Ollama 가 실패하면(연결·시간 초과·HTTP 오류·빈 응답·형식 오류) Gemini 키가 있을 때만 Gemini 로 다시 보낸다.
+                if (apiKey == null || apiKey.isBlank()) {
+                    throw e;
                 }
+                log.warn("[AI] Ollama 실패 (ID: {}): {}. Gemini 로 재시도", id, describe(e));
+                return call(false, GEMINI_API_URL, geminiRequest(prompt, image), id);
             }
-
-            String body = response == null ? "" : new String(response, java.nio.charset.StandardCharsets.UTF_8);
-            return parseResult(ollama ? ollamaText(body) : geminiText(body));
         } catch (com.moyeolog.moyelog_BE.exception.AiAnalysisException e) {
             throw e;
-        } catch (org.springframework.web.client.HttpStatusCodeException e) {
-            // 상위 API 의 응답 본문/URL 은 클라이언트에 돌려주지 않고 고정 문구만 사용한다.
-            log.error("[AI] AI 분석 실패 (ID: {}): upstream status {}", id, e.getStatusCode().value());
-            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
         } catch (Exception e) {
-            log.error("[AI] AI 분석 실패 (ID: {}): {}", id, e.getClass().getSimpleName(), e);
+            // 상위 API 의 응답 본문/URL 은 클라이언트에 돌려주지 않고 고정 문구만 사용한다.
+            log.error("[AI] AI 분석 실패 (ID: {}): {}", id, describe(e), e);
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
         }
+    }
+
+    private static String describe(Exception e) {
+        if (e instanceof org.springframework.web.client.HttpStatusCodeException h) {
+            return "upstream status " + h.getStatusCode().value();
+        }
+        return e.getClass().getSimpleName();
+    }
+
+    /** 한 공급자에 요청하고 결과를 파싱한다. 503/429 는 최대 3번까지 다시 보낸다. */
+    private Map<String, Object> call(boolean ollama, String url, HttpEntity<?> entity, String id) throws Exception {
+        int maxRetries = 3;
+        long waitTime = 2000; // Start with 2 seconds
+
+        byte[] response = null;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                log.info("[AI] Calling {} for ID: {} (Attempt {}/{})", ollama ? llmModel : "Gemini", id, attempt, maxRetries);
+                // byte[] 로 받아 UTF-8 로 푼다. Ollama 는 charset 없이 응답할 때가 있어 String 으로 받으면 한글이 깨진다.
+                response = restTemplate.postForObject(url, entity, byte[].class);
+                log.info("[AI] API Response received successfully");
+                break; // Success, exit retry loop
+            } catch (org.springframework.web.client.HttpStatusCodeException e) {
+                int statusCode = e.getStatusCode().value();
+                if (statusCode == 503 || statusCode == 429) {
+                    log.warn("[AI] API temporarily unavailable or rate limited ({}). Retrying in {}ms...", statusCode, waitTime);
+                    if (attempt == maxRetries) {
+                        throw e; // Rethrow if max retries reached
+                    }
+                    try {
+                        Thread.sleep(waitTime);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Retry interrupted", ie);
+                    }
+                    waitTime *= 2; // Exponential backoff (2s -> 4s -> 8s)
+                } else {
+                    throw e; // Do not retry for other HTTP errors (like 400 Bad Request)
+                }
+            }
+        }
+
+        String body = response == null ? "" : new String(response, java.nio.charset.StandardCharsets.UTF_8);
+        return parseResult(ollama ? ollamaText(body) : geminiText(body));
     }
 
     /** Ollama /api/chat 요청. format 에 JSON Schema 를 줘서 결과 형식을 고정한다. */

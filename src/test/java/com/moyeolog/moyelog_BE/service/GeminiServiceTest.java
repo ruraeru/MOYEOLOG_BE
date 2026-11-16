@@ -19,6 +19,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class GeminiServiceTest {
@@ -30,7 +31,6 @@ class GeminiServiceTest {
         FileService fileService = mock(FileService.class);
         when(fileService.loadImage(any())).thenReturn(Optional.empty());
         GeminiService service = new GeminiService(restTemplate, fileService, new ObjectMapper());
-        ReflectionTestUtils.setField(service, "provider", "ollama");
         ReflectionTestUtils.setField(service, "llmBaseUrl", "https://ai.example/");
         ReflectionTestUtils.setField(service, "llmModel", "qwen3.5:9b");
         ReflectionTestUtils.setField(service, "llmApiKey", " Bearer tok ");
@@ -50,5 +50,30 @@ class GeminiServiceTest {
         server.verify();
         assertThat(result.get("summary")).isEqualTo("요약");
         assertThat(result.get("keywords")).isEqualTo(List.of("회의"));
+    }
+
+    @Test
+    void fallsBackToGeminiWhenOllamaFails() {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        FileService fileService = mock(FileService.class);
+        when(fileService.loadImage(any())).thenReturn(Optional.empty());
+        GeminiService service = new GeminiService(restTemplate, fileService, new ObjectMapper());
+        ReflectionTestUtils.setField(service, "llmBaseUrl", "https://ai.example");
+        ReflectionTestUtils.setField(service, "llmModel", "qwen3.5:9b");
+        ReflectionTestUtils.setField(service, "llmApiKey", "");
+        ReflectionTestUtils.setField(service, "apiKey", "gem-key");
+
+        String reply = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"{\\\"ocrText\\\":\\\"\\\",\\\"summary\\\":\\\"요약\\\",\\\"keywords\\\":[]}\"}]}}]}";
+        server.expect(requestTo("https://ai.example/api/chat")).andRespond(withServerError());
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith("https://generativelanguage.googleapis.com/")))
+                .andExpect(header("x-goog-api-key", "gem-key"))
+                .andRespond(withSuccess(reply.getBytes(java.nio.charset.StandardCharsets.UTF_8), MediaType.APPLICATION_JSON));
+
+        Memo memo = Memo.builder().id(UUID.randomUUID()).content("내일 회의").build();
+        Map<String, Object> result = service.analyzeMemo(memo);
+
+        server.verify();
+        assertThat(result.get("summary")).isEqualTo("요약");
     }
 }
