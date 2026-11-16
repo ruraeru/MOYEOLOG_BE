@@ -20,8 +20,21 @@ import java.util.*;
 @Slf4j
 public class GeminiService {
 
+    /** ollama(기본): LLM_BASE_URL 의 Ollama 호환 /api/chat. gemini: Google Gemini API. */
+    @Value("${ai.provider:ollama}")
+    private String provider;
+
     @Value("${gemini.api.key:}")
     private String apiKey;
+
+    @Value("${llm.base-url:https://ai.ruraeru.xyz}")
+    private String llmBaseUrl;
+
+    @Value("${llm.model:qwen3.5:9b}")
+    private String llmModel;
+
+    @Value("${llm.api-key:}")
+    private String llmApiKey;
 
     private final RestTemplate restTemplate;
     private final FileService fileService;
@@ -40,7 +53,8 @@ public class GeminiService {
     }
 
     private Map<String, Object> analyze(String content, String imageUrl, String id) {
-        if (apiKey == null || apiKey.isBlank()) {
+        boolean ollama = !"gemini".equalsIgnoreCase(provider);
+        if (!ollama && (apiKey == null || apiKey.isBlank())) {
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 분석 기능이 설정되지 않았습니다.");
         }
         String prompt = "You are an AI assistant analyzing a user's memo or topic. " +
@@ -52,53 +66,36 @@ public class GeminiService {
                 "Text content: " + (content != null ? content : "");
 
         try {
-            Map<String, Object> requestBody = new HashMap<>();
-            List<Map<String, Object>> contents = new ArrayList<>();
-            Map<String, Object> reqContent = new HashMap<>();
-            List<Map<String, Object>> parts = new ArrayList<>();
-
-            // 1. Text Part
-            Map<String, Object> textPart = new HashMap<>();
-            textPart.put("text", prompt);
-            parts.add(textPart);
-
-            // 2. Image Part (if exists)
-// 업로드 디렉터리 안의 실제 이미지 파일만 전송한다 (경로 검증은 FileService 가 담당).
+            // 업로드 디렉터리 안의 실제 이미지 파일만 전송한다 (경로 검증은 FileService 가 담당).
             FileService.ImageData image = fileService.loadImage(imageUrl).orElse(null);
             if (image != null) {
-                log.info("[Gemini] Including image in analysis for ID: {}", id);
-                Map<String, Object> imagePart = new HashMap<>();
-                Map<String, Object> inlineData = new HashMap<>();
-                imagePart.put("inline_data", inlineData);
-                inlineData.put("mime_type", image.mimeType());
-                inlineData.put("data", image.base64());
-                parts.add(imagePart);
+                log.info("[AI] Including image in analysis for ID: {}", id);
             }
-
-            reqContent.put("parts", parts);
-            contents.add(reqContent);
-            requestBody.put("contents", contents);
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            // API 키는 URL(쿼리 스트링)이 아니라 헤더로 보낸다 → 예외 메시지/로그에 키가 남지 않는다.
-            headers.set(API_KEY_HEADER, apiKey);
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+            String url;
+            HttpEntity<?> entity;
+            if (ollama) {
+                url = llmBaseUrl.replaceAll("/+$", "") + "/api/chat";
+                entity = ollamaRequest(prompt, image);
+            } else {
+                url = GEMINI_API_URL;
+                entity = geminiRequest(prompt, image);
+            }
 
             int maxRetries = 3;
             long waitTime = 2000; // Start with 2 seconds
 
-            String response = null;
+            byte[] response = null;
             for (int attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
-                    log.info("[Gemini] Calling Gemini API for ID: {} (Attempt {}/{})", id, attempt, maxRetries);
-                    response = restTemplate.postForObject(GEMINI_API_URL, entity, String.class);
-                    log.info("[Gemini] API Response received successfully");
+                    log.info("[AI] Calling {} for ID: {} (Attempt {}/{})", ollama ? llmModel : "Gemini", id, attempt, maxRetries);
+                    // byte[] 로 받아 UTF-8 로 푼다. Ollama 는 charset 없이 응답할 때가 있어 String 으로 받으면 한글이 깨진다.
+                    response = restTemplate.postForObject(url, entity, byte[].class);
+                    log.info("[AI] API Response received successfully");
                     break; // Success, exit retry loop
                 } catch (org.springframework.web.client.HttpStatusCodeException e) {
                     int statusCode = e.getStatusCode().value();
                     if (statusCode == 503 || statusCode == 429) {
-                        log.warn("[Gemini] API temporarily unavailable or rate limited ({}). Retrying in {}ms...", statusCode, waitTime);
+                        log.warn("[AI] API temporarily unavailable or rate limited ({}). Retrying in {}ms...", statusCode, waitTime);
                         if (attempt == maxRetries) {
                             throw e; // Rethrow if max retries reached
                         }
@@ -114,21 +111,97 @@ public class GeminiService {
                     }
                 }
             }
-            
-            return parseGeminiResponse(response);
+
+            String body = response == null ? "" : new String(response, java.nio.charset.StandardCharsets.UTF_8);
+            return parseResult(ollama ? ollamaText(body) : geminiText(body));
         } catch (com.moyeolog.moyelog_BE.exception.AiAnalysisException e) {
             throw e;
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             // 상위 API 의 응답 본문/URL 은 클라이언트에 돌려주지 않고 고정 문구만 사용한다.
-            log.error("[Gemini] AI 분석 실패 (ID: {}): upstream status {}", id, e.getStatusCode().value());
+            log.error("[AI] AI 분석 실패 (ID: {}): upstream status {}", id, e.getStatusCode().value());
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
         } catch (Exception e) {
-            log.error("[Gemini] AI 분석 실패 (ID: {}): {}", id, e.getClass().getSimpleName(), e);
+            log.error("[AI] AI 분석 실패 (ID: {}): {}", id, e.getClass().getSimpleName(), e);
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
         }
     }
 
-    private Map<String, Object> parseGeminiResponse(String response) throws Exception {
+    /** Ollama /api/chat 요청. format 에 JSON Schema 를 줘서 결과 형식을 고정한다. */
+    private HttpEntity<Map<String, Object>> ollamaRequest(String prompt, FileService.ImageData image) {
+        Map<String, Object> message = new HashMap<>();
+        message.put("role", "user");
+        message.put("content", prompt);
+        if (image != null) {
+            message.put("images", List.of(image.base64()));
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", llmModel);
+        body.put("messages", List.of(message));
+        body.put("format", Map.of(
+                "type", "object",
+                "properties", Map.of(
+                        "ocrText", Map.of("type", "string"),
+                        "summary", Map.of("type", "string"),
+                        "keywords", Map.of("type", "array", "items", Map.of("type", "string"))),
+                "required", List.of("ocrText", "summary", "keywords")));
+        body.put("think", false);
+        body.put("stream", false);
+        body.put("keep_alive", "30m");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        // 환경변수에 붙여넣을 때 섞이는 공백·따옴표·"Bearer " 를 걷어낸다
+        String key = llmApiKey == null ? "" : llmApiKey.trim().replaceAll("^[\"']|[\"']$", "").replaceFirst("(?i)^Bearer\\s+", "");
+        if (!key.isEmpty()) {
+            headers.setBearerAuth(key);
+        }
+        return new HttpEntity<>(body, headers);
+    }
+
+    private HttpEntity<Map<String, Object>> geminiRequest(String prompt, FileService.ImageData image) {
+        Map<String, Object> requestBody = new HashMap<>();
+        List<Map<String, Object>> contents = new ArrayList<>();
+        Map<String, Object> reqContent = new HashMap<>();
+        List<Map<String, Object>> parts = new ArrayList<>();
+
+        // 1. Text Part
+        Map<String, Object> textPart = new HashMap<>();
+        textPart.put("text", prompt);
+        parts.add(textPart);
+
+        // 2. Image Part (if exists)
+        if (image != null) {
+            Map<String, Object> imagePart = new HashMap<>();
+            Map<String, Object> inlineData = new HashMap<>();
+            imagePart.put("inline_data", inlineData);
+            inlineData.put("mime_type", image.mimeType());
+            inlineData.put("data", image.base64());
+            parts.add(imagePart);
+        }
+
+        reqContent.put("parts", parts);
+        contents.add(reqContent);
+        requestBody.put("contents", contents);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        // API 키는 URL(쿼리 스트링)이 아니라 헤더로 보낸다 → 예외 메시지/로그에 키가 남지 않는다.
+        headers.set(API_KEY_HEADER, apiKey);
+        return new HttpEntity<>(requestBody, headers);
+    }
+
+    private String ollamaText(String response) throws Exception {
+        JsonNode root = objectMapper.readTree(response);
+        String text = root.path("message").path("content").asText("");
+        if (text.isBlank()) {
+            log.error("[AI] Empty Ollama response (error: {}, done_reason: {})",
+                    root.path("error").asText(""), root.path("done_reason").asText(""));
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI가 응답을 생성하지 못했습니다.");
+        }
+        return text;
+    }
+
+    private String geminiText(String response) throws Exception {
         JsonNode root = objectMapper.readTree(response);
         
         JsonNode candidates = root.path("candidates");
@@ -137,9 +210,12 @@ public class GeminiService {
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI가 응답을 생성하지 못했습니다.");
         }
 
-        String textResponse = candidates.get(0).path("content").path("parts").get(0).path("text").asText();
-        log.debug("[Gemini] Raw Text Response: {}", textResponse);
-        
+        return candidates.get(0).path("content").path("parts").get(0).path("text").asText();
+    }
+
+    private Map<String, Object> parseResult(String textResponse) {
+        log.debug("[AI] Raw Text Response: {}", textResponse);
+
         try {
             // JSON 부분만 추출 (마크다운 코드 블록 제거)
             String jsonStr = textResponse.trim();
@@ -154,7 +230,7 @@ public class GeminiService {
             Map<String, Object> parsed = objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
             return normalize(parsed);
         } catch (Exception e) {
-            log.error("[Gemini] JSON Parsing Failed. Raw text: {}", textResponse);
+            log.error("[AI] JSON Parsing Failed. Raw text: {}", textResponse);
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 응답 형식이 올바르지 않습니다.");
         }
     }
