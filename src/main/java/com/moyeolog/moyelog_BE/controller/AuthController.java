@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.controller;
 
+import com.moyeolog.moyelog_BE.dto.AuthLogoutRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncResponse;
 import com.moyeolog.moyelog_BE.exception.InvalidTokenException;
@@ -34,22 +35,40 @@ public class AuthController {
     public ResponseEntity<AuthSyncResponse> sync(
             @RequestHeader(value = INTERNAL_SECRET_HEADER, required = false) String internalSecret,
             @RequestBody AuthSyncRequest request) {
-        if (internalApiSecret == null || internalApiSecret.isBlank()
-                || !TokenHasher.constantTimeEquals(internalApiSecret, internalSecret)) {
-            log.warn("Rejected sync request: missing or invalid internal secret");
-            throw new InvalidTokenException("허용되지 않은 요청입니다.");
-        }
-
+        requireInternalSecret(internalSecret, "sync");
         AuthSyncResponse response = authService.syncUser(request);
         log.info("Successfully synced user: {}", response.getUser().getId());
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 로그아웃 (서버 간 호출, nginx 가 외부에서 막는다). 리프레시 토큰을 폐기하고 액세스 토큰을 만료 시각까지 거부한다.
+     * 본문이 비어 있거나 이미 폐기된 토큰이어도 204.
+     */
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(
+            @RequestHeader(value = INTERNAL_SECRET_HEADER, required = false) String internalSecret,
+            @RequestBody(required = false) AuthLogoutRequest request) {
+        requireInternalSecret(internalSecret, "logout");
+        if (request != null) {
+            authService.logout(request.getRefreshToken(), request.getAccessToken());
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    private void requireInternalSecret(String internalSecret, String action) {
+        if (internalApiSecret == null || internalApiSecret.isBlank()
+                || !TokenHasher.constantTimeEquals(internalApiSecret, internalSecret)) {
+            log.warn("Rejected {} request: missing or invalid internal secret", action);
+            throw new InvalidTokenException("허용되지 않은 요청이에요.");
+        }
     }
 
     @PostMapping("/refresh")
     public ResponseEntity<Map<String, String>> refresh(@RequestBody Map<String, Object> request) {
         Object refreshToken = request.get("refreshToken");
         if (!(refreshToken instanceof String token) || token.isBlank()) {
-            throw new InvalidTokenException("유효하지 않은 리프레시 토큰입니다.");
+            throw new InvalidTokenException("로그인이 만료됐어요. 다시 로그인해 주세요.");
         }
         return ResponseEntity.ok(authService.refreshToken(token));
     }

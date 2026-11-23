@@ -225,7 +225,7 @@ class ApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("배포 이전에 발급된 토큰(typ 없음, 원문 저장 행)도 계속 동작한다")
+    @DisplayName("예전 토큰: typ 없는 액세스 토큰은 기본으로 거부, 원문 저장된 예전 리프레시 행은 교체된다")
     void legacyTokens() throws Exception {
         Session session = login("legacy");
         javax.crypto.SecretKey key = io.jsonwebtoken.security.Keys.hmacShaKeyFor(
@@ -240,8 +240,9 @@ class ApiIntegrationTest {
                         + "select ?, user_id, dateadd('DAY', 7, current_timestamp) from refresh_tokens where current_token = ?",
                 legacyRefresh, session.refreshToken());
 
+        // jwt.accept-legacy-tokens 기본값 false → typ 없는 액세스 토큰은 거부
         mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer " + legacyAccess))
-                .andExpect(status().isOk());
+                .andExpect(status().isUnauthorized());
         // 저장되어 있는 예전 리프레시 토큰은 액세스 토큰으로 쓸 수 없다
         mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer " + legacyRefresh))
                 .andExpect(status().isUnauthorized());
@@ -286,7 +287,7 @@ class ApiIntegrationTest {
         // 검증 오류: 첫 번째 필드 오류의 한국어 메시지
         mockMvc.perform(jsonBody(auth(post("/api/groups"), session), java.util.Map.of("name", "")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("그룹 이름은 필수입니다."));
+                .andExpect(jsonPath("$.message").value("모임 이름을 입력해 주세요."));
         // 본문의 잘못된 UUID
         mockMvc.perform(auth(post("/api/schedules"), session).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"title\":\"t\",\"startTime\":\"2026-01-01T10:00:00\",\"endTime\":\"2026-01-01T11:00:00\",\"groupId\":\"nope\"}"))
@@ -335,7 +336,16 @@ class ApiIntegrationTest {
 
         JsonNode friend = json(mockMvc.perform(auth(get("/api/friends"), a)).andReturn()).get(0);
         assertThat(friend.path("userId").asText()).isEqualTo(b.userId());
-        assertThat(friend.path("email").asText()).contains("@example.com");
+        // 이메일은 상대가 공개 설정(emailVisible=true)을 켰을 때만 보인다. 기본은 숨김.
+        assertThat(friend.path("email").isNull()).isTrue();
+
+        // b 가 이메일 공개를 켜면 친구 a 에게 보인다
+        MockMultipartFile visible = new MockMultipartFile("user", "", "application/json",
+                mapper.writeValueAsBytes(java.util.Map.of("emailVisible", true)));
+        mockMvc.perform(auth(multipart("/api/users/me").file(visible).with(r -> { r.setMethod("PUT"); return r; }), b))
+                .andExpect(status().isOk());
+        JsonNode visibleFriend = json(mockMvc.perform(auth(get("/api/friends"), a)).andReturn()).get(0);
+        assertThat(visibleFriend.path("email").asText()).endsWith("@example.com");
     }
 
     // ─── memos ──────────────────────────────────────────────────────
@@ -475,17 +485,21 @@ class ApiIntegrationTest {
                 "title", "약속", "startTime", "2026-03-01T10:00:00", "endTime", "2026-03-01T11:00:00", "groupId", groupId));
         mockMvc.perform(jsonBody(auth(post("/api/schedules"), outsider), schedule)).andExpect(status().isForbidden());
 
-        // 초대: 비멤버는 초대할 수 없다, userIds 로 초대
+        // 초대: 비멤버는 초대할 수 없다, userIds 로 친구만 초대
+        makeFriends(owner, member);
         mockMvc.perform(jsonBody(auth(post("/api/groups/" + groupId + "/invitations"), outsider),
                         java.util.Map.of("userIds", java.util.List.of(member.userId()))))
                 .andExpect(status().isForbidden());
         mockMvc.perform(jsonBody(auth(post("/api/groups/" + groupId + "/invitations"), owner),
                         java.util.Map.of("userIds", java.util.List.of(member.userId()))))
                 .andExpect(status().isOk());
-        // 같은 초대를 다시 보내도 중복 생성되지 않는다 (null/빈 이메일은 건너뜀)
-        mockMvc.perform(auth(post("/api/groups/" + groupId + "/invitations"), owner).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"emails\":[null,\"\"],\"userIds\":[\"" + member.userId() + "\"]}"))
+        // 같은 초대를 다시 보내도 중복 생성되지 않는다, 이메일 초대는 지원 종료(400)
+        mockMvc.perform(jsonBody(auth(post("/api/groups/" + groupId + "/invitations"), owner),
+                        java.util.Map.of("userIds", java.util.List.of(member.userId()))))
                 .andExpect(status().isOk());
+        mockMvc.perform(auth(post("/api/groups/" + groupId + "/invitations"), owner).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"emails\":[\"x@example.com\"],\"userIds\":[\"" + member.userId() + "\"]}"))
+                .andExpect(status().isBadRequest());
         JsonNode invitations = json(mockMvc.perform(auth(get("/api/groups/invitations"), member)).andReturn());
         assertThat(invitations).hasSize(1);
         String invitationId = invitations.get(0).path("id").asText();
@@ -557,8 +571,13 @@ class ApiIntegrationTest {
         mockMvc.perform(auth(get("/api/groups/" + groupId + "/memos"), member)).andExpect(status().isForbidden());
         mockMvc.perform(auth(post("/api/groups/join").param("code", inviteCode), member)).andExpect(status().isNotFound());
 
-        // 새 코드로 다시 가입한 뒤 스스로 나가기
-        mockMvc.perform(auth(post("/api/groups/join").param("code", newCode), member)).andExpect(status().isOk());
+        // 내보내진 사람은 새 코드로도 가입할 수 없다(403). 방장이 다시 초대하면 들어올 수 있다.
+        mockMvc.perform(auth(post("/api/groups/join").param("code", newCode), member)).andExpect(status().isForbidden());
+        mockMvc.perform(jsonBody(auth(post("/api/groups/" + groupId + "/invitations"), owner),
+                        java.util.Map.of("userIds", java.util.List.of(member.userId()))))
+                .andExpect(status().isOk());
+        String reInvitationId = json(mockMvc.perform(auth(get("/api/groups/invitations"), member)).andReturn()).get(0).path("id").asText();
+        mockMvc.perform(auth(post("/api/groups/invitations/" + reInvitationId + "/accept"), member)).andExpect(status().isOk());
         mockMvc.perform(auth(delete("/api/groups/" + groupId + "/members/me"), member)).andExpect(status().isNoContent());
         mockMvc.perform(auth(get("/api/groups/" + groupId), member)).andExpect(status().isForbidden());
 
@@ -670,10 +689,10 @@ class ApiIntegrationTest {
     void profile() throws Exception {
         Session session = login("profile");
         MockMultipartFile tooLong = new MockMultipartFile("user", "", "application/json",
-                mapper.writeValueAsBytes(java.util.Map.of("nickname", "가".repeat(51))));
+                mapper.writeValueAsBytes(java.util.Map.of("nickname", "가".repeat(21))));
         mockMvc.perform(auth(multipart("/api/users/me").file(tooLong).with(r -> { r.setMethod("PUT"); return r; }), session))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("닉네임은 50자를 초과할 수 없습니다."));
+                .andExpect(jsonPath("$.message").value("닉네임은 2자 이상 20자 이하로 입력해 주세요."));
 
         MockMultipartFile ok = new MockMultipartFile("user", "", "application/json",
                 mapper.writeValueAsBytes(java.util.Map.of("nickname", "새닉네임", "bio", "소개")));

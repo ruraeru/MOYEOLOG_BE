@@ -1,16 +1,21 @@
 package com.moyeolog.moyelog_BE.controller;
 
 import com.moyeolog.moyelog_BE.dto.*;
+import com.moyeolog.moyelog_BE.service.GroupErrors;
 import com.moyeolog.moyelog_BE.service.GroupService;
 import com.moyeolog.moyelog_BE.service.MemoService;
 import com.moyeolog.moyelog_BE.service.ScheduleService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -64,12 +69,32 @@ public class GroupController {
         return ResponseEntity.ok(scheduleService.getGroupSchedules(UUID.fromString(userId), id));
     }
 
+    /** 초대 코드로 모임 정보 미리 보기. 없는 코드는 404 */
+    @GetMapping("/preview")
+    public ResponseEntity<GroupPreviewResponse> preview(
+            @AuthenticationPrincipal String userId,
+            @RequestParam(required = false) String code) {
+        return ResponseEntity.ok(groupService.previewByCode(UUID.fromString(userId), code));
+    }
+
+    /** 초대 코드로 가입 → {groupId}. 이미 멤버면 409 (본문에 groupId 포함) */
     @PostMapping("/join")
-    public ResponseEntity<Void> joinByCode(
+    public ResponseEntity<GroupJoinResponse> joinByCode(
             @AuthenticationPrincipal String userId,
             @RequestParam String code) {
-        groupService.joinGroupByCode(UUID.fromString(userId), code);
-        return ResponseEntity.ok().build();
+        return ResponseEntity.ok(groupService.joinGroupByCode(UUID.fromString(userId), code));
+    }
+
+    /** 이미 참여한 모임: 공통 오류 형식에 groupId 를 더해 돌려준다 (프론트가 그 모임으로 이동). */
+    @ExceptionHandler(GroupErrors.AlreadyMemberException.class)
+    public ResponseEntity<Map<String, Object>> handleAlreadyMember(GroupErrors.AlreadyMemberException e) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", HttpStatus.CONFLICT.getReasonPhrase());
+        body.put("message", e.getMessage());
+        body.put("status", HttpStatus.CONFLICT.value());
+        body.put("timestamp", LocalDateTime.now());
+        body.put("groupId", e.getGroupId());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
     @PostMapping("/{id}/invitations")
@@ -102,7 +127,7 @@ public class GroupController {
         return ResponseEntity.ok().build();
     }
 
-    /** 그룹 나가기 (멤버 본인). 그룹장은 나갈 수 없습니다. */
+    /** 모임 나가기 (멤버 본인). 방장은 나갈 수 없습니다. */
     @DeleteMapping("/{id}/members/me")
     public ResponseEntity<Void> leaveGroup(
             @AuthenticationPrincipal String userId,
@@ -111,7 +136,7 @@ public class GroupController {
         return ResponseEntity.noContent().build();
     }
 
-    /** 그룹 삭제 (그룹장 전용) */
+    /** 모임 삭제 (방장 전용) */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteGroup(
             @AuthenticationPrincipal String userId,

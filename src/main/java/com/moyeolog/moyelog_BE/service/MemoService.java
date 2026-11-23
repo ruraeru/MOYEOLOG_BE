@@ -5,28 +5,41 @@ import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
 import com.moyeolog.moyelog_BE.entity.*;
+import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationType;
+import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
-import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
+import com.moyeolog.moyelog_BE.exception.ConflictException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.*;
+import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
  * 메모 비즈니스 로직을 처리하는 서비스 클래스입니다.
- * 다중 태그 기능 (메모 및 일정)이 추가되었습니다.
+ *
+ * 권한 규칙
+ * - 읽기: 작성자, 공유받은 사람, (모임 메모) 현재 모임 멤버
+ * - 수정·태그: 개인 메모는 작성자, 모임 메모는 현재 모임 멤버 (나간·강퇴된 작성자는 수정 불가)
+ * - 삭제·공유: 작성자
  */
 @Service
 @RequiredArgsConstructor
@@ -39,39 +52,64 @@ public class MemoService {
     private final MemoTagRepository memoTagRepository;
     private final MemoShareRepository memoShareRepository;
     private final MemoAiInsightRepository memoAiInsightRepository;
-    private final GeminiService geminiService;
+    private final AiAnalysisSupport aiAnalysisSupport;
     private final GroupRepository groupRepository;
     private final GroupMemberRepository groupMemberRepository;
     private final ScheduleRepository scheduleRepository;
     private final FriendRepository friendRepository;
     private final MemoFavoriteRepository memoFavoriteRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     private static final int MAX_TAG_LENGTH = 50;
     private static final int MAX_TAG_COUNT = 50;
+    private static final int NOTIFICATION_TITLE_LENGTH = 30;
+    private static final String MEMO_NOT_FOUND = "메모를 찾을 수 없어요. 삭제됐을 수 있어요.";
+    private static final String NO_READ_PERMISSION = "이 메모를 볼 수 있는 권한이 없어요.";
+    private static final String NO_EDIT_PERMISSION = "이 메모를 고칠 수 있는 권한이 없어요.";
 
     // ─── 공개 메서드 (API) ──────────────────────────────────────────
 
     /** 메모 공유: 작성자만, 그리고 작성자의 (수락된) 친구에게만 공유할 수 있습니다. */
     @Transactional
     public void shareMemo(UUID authorId, UUID memoId, MemoShareRequest request) {
-        Memo memo = findMemoById(memoId);
+        // 같은 메모에 대한 동시 공유를 줄 세운다 (중복 행 방지).
+        Memo memo = findMemoForUpdate(memoId);
         validateAuthor(memo, authorId);
 
-        if (request == null || request.getFriendIds() == null || request.getFriendIds().isEmpty()) {
-            throw new BadRequestException("공유할 친구를 한 명 이상 선택해주세요.");
+        Set<UUID> friendIds = new LinkedHashSet<>();
+        if (request != null && request.getFriendIds() != null) {
+            friendIds.addAll(request.getFriendIds());
         }
-
-        Set<UUID> friendIds = new LinkedHashSet<>(request.getFriendIds());
         friendIds.remove(null);
         friendIds.remove(authorId);
+        if (friendIds.isEmpty()) {
+            throw new BadRequestException("공유할 친구를 한 명 이상 선택해 주세요.");
+        }
 
         // 먼저 전부 검증한 뒤 저장한다 (일부만 공유되는 일이 없도록).
+        // 친구 관계 행을 잠가서, 확인과 저장 사이에 친구 삭제가 끼어들지 못하게 한다.
+        List<User> friends = new ArrayList<>();
         for (UUID friendId : friendIds) {
-            if (!friendRepository.areFriends(authorId, friendId)) {
-                throw new UnauthorizedAccessException("친구에게만 메모를 공유할 수 있습니다.");
+            if (friendRepository.findAcceptedBetweenForUpdate(authorId, friendId).isEmpty()) {
+                throw new UnauthorizedAccessException("친구에게만 메모를 공유할 수 있어요.");
+            }
+            friends.add(findUserById(friendId));
+        }
+
+        List<User> newlyShared = new ArrayList<>();
+        for (User friend : friends) {
+            if (!memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), friend.getId())) {
+                memoShareRepository.save(MemoShare.builder().memo(memo).sharedTo(friend).build());
+                newlyShared.add(friend);
             }
         }
-        friendIds.forEach(friendId -> shareWithFriend(memo, friendId));
+        ConcurrentUpdates.flush(memoShareRepository::flush);
+
+        String message = memo.getAuthor().getNickname() + "님이 '" + shortTitle(memo.getTitle()) + "' 메모를 공유했어요.";
+        for (User friend : newlyShared) {
+            eventPublisher.publishEvent(new NotificationEvent(friend.getId(), authorId,
+                    NotificationType.MEMO_SHARED, message, "/memo/" + memo.getId()));
+        }
     }
 
     /** 메모 공유 해제: 작성자가 공유 대상을 제거하거나, 공유받은 사용자가 스스로 공유를 해제합니다. */
@@ -80,24 +118,27 @@ public class MemoService {
         Memo memo = findMemoById(memoId);
         boolean isAuthor = memo.getAuthor().getId().equals(requesterId);
         if (!isAuthor && !requesterId.equals(targetUserId)) {
-            throw new UnauthorizedAccessException("메모 작성자만 공유를 해제할 수 있습니다.");
+            throw new UnauthorizedAccessException("메모 작성자만 공유를 해제할 수 있어요.");
         }
 
-        List<MemoShare> shares = memoShareRepository.findAllByMemo_IdAndSharedTo_Id(memoId, targetUserId);
-        if (shares.isEmpty()) {
-            throw new ResourceNotFoundException("메모 공유", targetUserId);
+        if (memoShareRepository.deleteByMemoIdAndUserId(memoId, targetUserId) == 0) {
+            throw new ItemNotFoundException("이 메모를 공유받은 사람이 아니에요.");
         }
-        memoShareRepository.deleteAll(shares);
+        // 더 이상 읽을 수 없게 된 사람의 즐겨찾기도 지운다 (다시 공유해도 즐겨찾기가 되살아나지 않도록).
+        if (!isCurrentGroupMember(memo, targetUserId)) {
+            memoFavoriteRepository.deleteByUserIdAndMemoId(targetUserId, memoId);
+        }
     }
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getSharedMemos(UUID userId) {
         User user = findUserById(userId);
+        Viewer viewer = viewer(user);
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
         return memoShareRepository.findBySharedToOrderBySharedAtDesc(user).stream()
                 .map(MemoShare::getMemo)
                 .distinct()
-                .map(memo -> convertToResponse(memo, userId, favoriteIds))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
                 .collect(Collectors.toList());
     }
 
@@ -109,9 +150,10 @@ public class MemoService {
         if (request.getGroupId() != null) {
             requireGroupMember(request.getGroupId(), userId);
         }
-        List<Memo> taggedMemos = resolveTaggedMemos(request.getTaggedMemoIds(), userId, null);
+        Viewer viewer = viewer(author);
+        List<Memo> taggedMemos = resolveTaggedMemos(request.getTaggedMemoIds(), viewer, null);
         List<String> tags = normalizeTags(request.getTags());
-        List<Schedule> schedules = resolveSchedulesToTag(request.getTaggedScheduleIds(), userId, null);
+        List<Schedule> schedules = resolveSchedulesToLink(request.getTaggedScheduleIds(), viewer, request.getGroupId(), null);
 
         // 검증이 모두 끝난 뒤에 파일을 저장한다.
         String imageUrl = handleImageUpload(image, null);
@@ -127,33 +169,240 @@ public class MemoService {
 
         Memo savedMemo = memoRepository.save(memo);
         saveTags(savedMemo, tags);
-        syncSchedules(savedMemo, schedules);
+        Set<UUID> mentioned = new HashSet<>();
+        for (Schedule schedule : schedules) {
+            linkSchedule(schedule, savedMemo);
+            mentioned.add(schedule.getId());
+        }
+        savedMemo.replaceMentionedSchedules(mentioned);
 
-        return convertToResponse(savedMemo, userId, null);
+        return convertToResponse(savedMemo, viewer, null);
     }
 
     @Transactional(readOnly = true)
     public List<MemoResponse> getMyMemos(UUID userId) {
+        return getMyMemos(userId, null);
+    }
+
+    /** 내가 쓴 메모. q 가 있으면 제목·본문에 q 가 들어 있는 것만 (대소문자 무시). */
+    @Transactional(readOnly = true)
+    public List<MemoResponse> getMyMemos(UUID userId, String q) {
         User author = findUserById(userId);
+        Viewer viewer = viewer(author);
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
+        String keyword = q == null ? "" : q.trim().toLowerCase(Locale.ROOT);
         return memoRepository.findAllByAuthorOrderByCreatedAtDesc(author).stream()
-                .map(memo -> convertToResponse(memo, userId, favoriteIds))
+                .filter(memo -> keyword.isEmpty() || contains(memo.getTitle(), keyword) || contains(memo.getContent(), keyword))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
+                .collect(Collectors.toList());
+    }
+
+    /** 내가 즐겨찾기했고 지금 볼 수 있는 모든 메모 (내 메모·공유받은 메모·모임 메모), 최신순. */
+    @Transactional(readOnly = true)
+    public List<MemoResponse> getFavoriteMemos(UUID userId) {
+        User user = findUserById(userId);
+        Viewer viewer = viewer(user);
+        Set<UUID> favoriteIds = favoriteMemoIds(userId);
+        if (favoriteIds.isEmpty()) {
+            return new ArrayList<>();
+        }
+        return memoRepository.findAllById(favoriteIds).stream()
+                .filter(memo -> canRead(memo, viewer))
+                .sorted(Comparator.comparing(Memo::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
                 .collect(Collectors.toList());
     }
 
     @Transactional
     public void deleteMemo(UUID userId, UUID memoId) {
-        Memo memo = findMemoById(memoId);
+        // 동시 삭제는 행 잠금으로 줄 세운다: 먼저 지운 쪽만 성공하고 나머지는 404.
+        Memo memo = findMemoForUpdate(memoId);
         validateAuthor(memo, userId);
+        deleteMemoInternal(memo);
+        ConcurrentUpdates.flush(memoRepository::flush);
+    }
 
+    @Transactional
+    public MemoResponse updateTags(UUID userId, UUID memoId, List<String> newTags) {
+        Memo memo = findMemoForUpdate(memoId);
+        // 태그는 메모 수정과 같은 권한 (개인 메모는 작성자, 모임 메모는 현재 멤버).
+        validateEditAccess(memo, userId);
+
+        User modifier = findUserById(userId);
+        List<String> tags = normalizeTags(newTags);
+        memoTagRepository.deleteAllByMemo(memo);
+        saveTags(memo, tags);
+        memo.markModified(modifier);
+        ConcurrentUpdates.flush(memoRepository::flush);
+
+        return convertToResponse(memo, viewer(modifier), null);
+    }
+
+    @Transactional
+    public MemoResponse updateMemo(UUID userId, UUID memoId, MemoRequest request, MultipartFile image) {
+        // 같은 메모의 동시 수정은 행 잠금으로 줄 세운다 (태그 삭제·삽입과 메모 UPDATE 사이 데드락 방지).
+        Memo memo = findMemoForUpdate(memoId);
+        // 수정은 개인 메모는 작성자, 모임 메모는 현재 모임 멤버만 가능. 공유받은 사용자는 읽기 전용.
+        validateEditAccess(memo, userId);
+
+        // 오래된 화면에서 저장하면 다른 사람의 수정을 덮어쓰지 않도록 409.
+        if (request.getVersion() != null && !Objects.equals(request.getVersion(), memo.getVersion())) {
+            throw new ConflictException(ConcurrentUpdates.CONFLICT_MESSAGE);
+        }
+
+        // 요청에 groupId 가 있으면 그 그룹의 멤버여야 한다 (없는 그룹 404, 비멤버 403).
+        // 메모의 소속 그룹 자체는 수정으로 바뀌지 않는다.
+        if (request.getGroupId() != null) {
+            requireGroupMember(request.getGroupId(), userId);
+        }
+
+        User modifier = findUserById(userId);
+        Viewer viewer = viewer(modifier);
+        List<Memo> taggedMemos = request.getTaggedMemoIds() == null
+                ? new ArrayList<>(memo.getTaggedMemos() != null ? memo.getTaggedMemos() : List.of())
+                : resolveTaggedMemos(request.getTaggedMemoIds(), viewer, memo);
+        List<String> tags = request.getTags() == null ? null : normalizeTags(request.getTags());
+        // taggedScheduleIds 가 null/누락이면 기존 일정 연결을 그대로 둔다.
+        List<Schedule> schedulesToLink = request.getTaggedScheduleIds() == null
+                ? null
+                : resolveSchedulesToLink(request.getTaggedScheduleIds(), viewer, memo.getGroupId(), memo);
+
+        String previousImageUrl = memo.getImageUrl();
+        String imageUrl;
+        if (image != null && !image.isEmpty()) {
+            imageUrl = handleImageUpload(image, previousImageUrl);
+        } else if (Boolean.TRUE.equals(request.getRemoveImage())) {
+            imageUrl = null;
+        } else {
+            imageUrl = previousImageUrl;
+        }
+
+        memo.update(request.getTitle(), request.getContent(), imageUrl, modifier, taggedMemos);
+
+        if (tags != null) {
+            memoTagRepository.deleteAllByMemo(memo);
+            saveTags(memo, tags);
+        }
+        if (schedulesToLink != null) {
+            syncMentionedSchedules(memo, request.getTaggedScheduleIds(), schedulesToLink);
+        }
+        ConcurrentUpdates.flush(memoRepository::flush);
+
+        // 이미지가 교체·삭제되었으면 이전 파일을 지운다.
+        if (previousImageUrl != null && !previousImageUrl.equals(imageUrl)) {
+            fileService.deleteFileAfterCommit(previousImageUrl);
+        }
+
+        return convertToResponse(memo, viewer, null);
+    }
+
+    @Transactional(readOnly = true)
+    public MemoResponse getMemo(UUID userId, UUID memoId) {
+        Memo memo = findMemoById(memoId);
+        Viewer viewer = viewer(findUserById(userId));
+        if (!canRead(memo, viewer)) {
+            throw new UnauthorizedAccessException(NO_READ_PERMISSION);
+        }
+        return convertToResponse(memo, viewer, null);
+    }
+
+    /** 그룹 메모 목록: 그룹 멤버 전용 (없는 그룹 404, 비멤버 403) */
+    @Transactional(readOnly = true)
+    public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
+        requireGroupMember(groupId, userId);
+        Viewer viewer = viewer(findUserById(userId));
+        Set<UUID> favoriteIds = favoriteMemoIds(userId);
+        return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 메모 AI 분석 (작성자 전용). LLM 을 기다리는 동안 트랜잭션을 잡지 않는다:
+     * 짧은 읽기 트랜잭션 → 트랜잭션 밖 LLM 호출 → 짧은 쓰기 트랜잭션. 같은 메모를 분석 중이면 409.
+     */
+    public MemoInsightResponse analyzeMemo(UUID userId, UUID memoId) {
+        return aiAnalysisSupport.run("memo:" + memoId,
+                () -> {
+                    Memo memo = findMemoById(memoId);
+                    validateAuthor(memo, userId);
+                    log.info("[AI Analyze] Request for Memo: {}", memoId);
+                    return new AiAnalysisSupport.Source(memoId.toString(), memo.getContent(), memo.getImageUrl());
+                },
+                analyzed -> {
+                    // 분석하는 동안 메모가 지워졌으면 404
+                    Memo memo = findMemoById(memoId);
+                    MemoAiInsight insight = updateOrCreateInfo(memo, analyzed);
+                    return convertToInsightResponse(memoAiInsightRepository.save(insight));
+                });
+    }
+
+    /** 분석 결과가 없으면 null 을 반환합니다 (컨트롤러에서 204 No Content). */
+    @Transactional(readOnly = true)
+    public MemoInsightResponse getMemoInsight(UUID userId, UUID memoId) {
+        Memo memo = findMemoById(memoId);
+        validateAccess(memo, userId);
+        return memoAiInsightRepository.findById(memoId)
+                .map(this::convertToInsightResponse)
+                .orElse(null);
+    }
+
+    /** 즐겨찾기는 사용자별로 저장됩니다. 메모를 읽을 수 있는 사용자라면 누구나 자신의 즐겨찾기를 토글할 수 있습니다. */
+    @Transactional
+    public MemoResponse toggleFavorite(UUID userId, UUID memoId) {
+        Memo memo = findMemoById(memoId);
+        User user = findUserById(userId);
+        Viewer viewer = viewer(user);
+        if (!canRead(memo, viewer)) {
+            throw new UnauthorizedAccessException(NO_READ_PERMISSION);
+        }
+
+        boolean favorite;
+        if (memoFavoriteRepository.existsByUser_IdAndMemo_Id(userId, memoId)) {
+            // 동시에 해제돼 행이 이미 없어도 오류 없이 넘어간다.
+            memoFavoriteRepository.deleteByUserIdAndMemoId(userId, memoId);
+            favorite = false;
+        } else {
+            memoFavoriteRepository.save(MemoFavorite.builder().user(user).memo(memo).build());
+            // 동시 추가는 유니크 제약에 걸린다 → 409.
+            ConcurrentUpdates.flush(memoFavoriteRepository::flush);
+            favorite = true;
+        }
+
+        MemoResponse response = convertToResponse(memo, viewer, Set.of());
+        response.setIsFavorite(favorite);
+        return response;
+    }
+
+    /** 회원 탈퇴: 내 메모(와 그 공유·즐겨찾기·태그·연결), 나에게 온 공유, 내 즐겨찾기를 지운다. */
+    @EventListener
+    @Transactional
+    public void onUserDeleting(UserDeletingEvent event) {
+        UUID userId = event.userId();
+        memoShareRepository.deleteAllSharedTo(userId);
+        memoFavoriteRepository.deleteAllByUserId(userId);
+        for (Memo memo : memoRepository.findAllByAuthorId(userId)) {
+            deleteMemoInternal(memo);
+        }
+        memoRepository.flush();
+        memoRepository.clearLastModifier(userId);
+    }
+
+    // ─── 내부 헬퍼 메서드 (분리 및 최적화) ──────────────────────────
+
+    private void deleteMemoInternal(Memo memo) {
         // 메모 삭제 시 연결된 일정에서도 해당 메모를 삭제 (동기화)
-        syncSchedules(memo, new ArrayList<>());
+        for (Schedule schedule : scheduleRepository.findByTaggedMemosContains(memo)) {
+            if (schedule.getTaggedMemos() != null) {
+                schedule.getTaggedMemos().remove(memo);
+            }
+        }
 
         // 다른 메모가 이 메모를 태그하고 있다면 관계 삭제 (자기 참조 동기화)
-        List<Memo> referencingMemos = memoRepository.findByTaggedMemosContains(memo);
-        for (Memo refMemo : referencingMemos) {
-            refMemo.getTaggedMemos().remove(memo);
-            memoRepository.save(refMemo);
+        for (Memo refMemo : memoRepository.findByTaggedMemosContains(memo)) {
+            if (refMemo.getTaggedMemos() != null) {
+                refMemo.getTaggedMemos().remove(memo);
+            }
         }
 
         // 연관된 자식 엔티티 삭제
@@ -171,189 +420,114 @@ public class MemoService {
         fileService.deleteFileAfterCommit(imageUrl);
     }
 
-    @Transactional
-    public MemoResponse updateTags(UUID userId, UUID memoId, List<String> newTags) {
-        Memo memo = findMemoById(memoId);
-        validateAuthor(memo, userId);
-
-        List<String> tags = normalizeTags(newTags);
-        memoTagRepository.deleteAllByMemo(memo);
-        saveTags(memo, tags);
-
-        return convertToResponse(memo, userId, null);
-    }
-
-    @Transactional
-    public MemoResponse updateMemo(UUID userId, UUID memoId, MemoRequest request, MultipartFile image) {
-        Memo memo = findMemoById(memoId);
-        // 수정은 작성자 또는 (그룹 메모의 경우) 그룹 멤버만 가능. 공유받은 사용자는 읽기 전용.
-        validateEditAccess(memo, userId);
-
-        // 요청에 groupId 가 있으면 그 그룹의 멤버여야 한다 (없는 그룹 404, 비멤버 403).
-        // 메모의 소속 그룹 자체는 수정으로 바뀌지 않는다.
-        if (request.getGroupId() != null) {
-            requireGroupMember(request.getGroupId(), userId);
-        }
-
-        User modifier = findUserById(userId);
-        List<Memo> taggedMemos = resolveTaggedMemos(request.getTaggedMemoIds(), userId, memo);
-        List<String> tags = normalizeTags(request.getTags());
-        List<Schedule> schedules = resolveSchedulesToTag(request.getTaggedScheduleIds(), userId, memo);
-
-        String previousImageUrl = memo.getImageUrl();
-        String imageUrl = handleImageUpload(image, previousImageUrl);
-
-        memo.update(request.getTitle(), request.getContent(), imageUrl, modifier, taggedMemos);
-
-        memoTagRepository.deleteAllByMemo(memo);
-        saveTags(memo, tags);
-        syncSchedules(memo, schedules);
-
-        // 이미지가 교체되었으면 이전 파일을 지운다.
-        if (previousImageUrl != null && !previousImageUrl.equals(imageUrl)) {
-            fileService.deleteFileAfterCommit(previousImageUrl);
-        }
-
-        return convertToResponse(memo, userId, null);
-    }
-
-    @Transactional(readOnly = true)
-    public MemoResponse getMemo(UUID userId, UUID memoId) {
-        Memo memo = findMemoById(memoId);
-        validateAccess(memo, userId);
-        return convertToResponse(memo, userId, null);
-    }
-
-    /** 그룹 메모 목록: 그룹 멤버 전용 (없는 그룹 404, 비멤버 403) */
-    @Transactional(readOnly = true)
-    public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
-        requireGroupMember(groupId, userId);
-        Set<UUID> favoriteIds = favoriteMemoIds(userId);
-        return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
-                .map(memo -> convertToResponse(memo, userId, favoriteIds))
-                .collect(Collectors.toList());
-    }
-
-    @Transactional
-    public MemoInsightResponse analyzeMemo(UUID userId, UUID memoId) {
-        Memo memo = findMemoById(memoId);
-        validateAuthor(memo, userId);
-
-        log.info("[AI Analyze] Request for Memo: {}", memoId);
-        Map<String, Object> analysisResult = geminiService.analyzeMemo(memo);
-        
-        MemoAiInsight insight = updateOrCreateInfo(memo, analysisResult);
-        return convertToInsightResponse(memoAiInsightRepository.save(insight));
-    }
-
-    /** 분석 결과가 없으면 null 을 반환합니다 (컨트롤러에서 204 No Content). */
-    @Transactional(readOnly = true)
-    public MemoInsightResponse getMemoInsight(UUID userId, UUID memoId) {
-        Memo memo = findMemoById(memoId);
-        validateAccess(memo, userId);
-        return memoAiInsightRepository.findById(memoId)
-                .map(this::convertToInsightResponse)
-                .orElse(null);
-    }
-
-    /** 즐겨찾기는 사용자별로 저장됩니다. 메모를 읽을 수 있는 사용자라면 누구나 자신의 즐겨찾기를 토글할 수 있습니다. */
-    @Transactional
-    public MemoResponse toggleFavorite(UUID userId, UUID memoId) {
-        Memo memo = findMemoById(memoId);
-        validateAccess(memo, userId);
-
-        List<MemoFavorite> existing = memoFavoriteRepository.findAllByUser_IdAndMemo_Id(userId, memoId);
-        boolean favorite;
-        if (existing.isEmpty()) {
-            memoFavoriteRepository.save(MemoFavorite.builder()
-                    .user(findUserById(userId))
-                    .memo(memo)
-                    .build());
-            favorite = true;
-        } else {
-            memoFavoriteRepository.deleteAll(existing);
-            favorite = false;
-        }
-
-        MemoResponse response = convertToResponse(memo, userId, Set.of());
-        response.setIsFavorite(favorite);
-        return response;
-    }
-
-    // ─── 내부 헬퍼 메서드 (분리 및 최적화) ──────────────────────────
-
-    private void shareWithFriend(Memo memo, UUID friendId) {
-        User friend = findUserById(friendId);
-        if (!memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), friendId)) {
-            MemoShare memoShare = MemoShare.builder()
-                    .memo(memo)
-                    .sharedTo(friend)
-                    .build();
-            memoShareRepository.save(memoShare);
-        }
-    }
-
     private User findUserById(UUID userId) {
         return userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+                .orElseThrow(() -> new ItemNotFoundException("사용자를 찾을 수 없어요."));
     }
 
     private Memo findMemoById(UUID memoId) {
         return memoRepository.findById(memoId)
-                .orElseThrow(() -> new ResourceNotFoundException("메모", memoId));
+                .orElseThrow(() -> new ItemNotFoundException(MEMO_NOT_FOUND));
+    }
+
+    private Memo findMemoForUpdate(UUID memoId) {
+        return memoRepository.findByIdForUpdate(memoId)
+                .orElseThrow(() -> new ItemNotFoundException(MEMO_NOT_FOUND));
     }
 
     private void validateAuthor(Memo memo, UUID userId) {
         if (!memo.getAuthor().getId().equals(userId)) {
-            throw new UnauthorizedAccessException("해당 메모에 대한 권한이 없습니다. (작성자 전용)");
+            throw new UnauthorizedAccessException("메모 작성자만 할 수 있어요.");
         }
     }
 
-    /** 읽기 권한: 작성자, 공유받은 사용자, (그룹 메모의 경우) 그룹 멤버 */
-    private boolean canRead(Memo memo, UUID userId) {
-        if (memo.getAuthor().getId().equals(userId)) return true;
-        if (memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), userId)) return true;
+    /** 요청한 사용자와 그 사용자가 지금 속한 모임 (권한 계산용). */
+    private record Viewer(UUID id, Set<UUID> groupIds) {
+        boolean isMemberOf(UUID groupId) {
+            return groupId != null && groupIds.contains(groupId);
+        }
+    }
+
+    private Viewer viewer(User user) {
+        Set<UUID> groupIds = new HashSet<>();
+        List<GroupMember> memberships = groupMemberRepository.findByUser(user);
+        if (memberships != null) {
+            for (GroupMember membership : memberships) {
+                groupIds.add(membership.getGroup().getId());
+            }
+        }
+        return new Viewer(user.getId(), groupIds);
+    }
+
+    private boolean isCurrentGroupMember(Memo memo, UUID userId) {
         return memo.getGroupId() != null
                 && groupMemberRepository.existsByGroup_IdAndUser_Id(memo.getGroupId(), userId);
     }
 
+    /** 읽기 권한: 작성자, (그룹 메모의 경우) 현재 그룹 멤버, 공유받은 사용자 */
+    private boolean canRead(Memo memo, Viewer viewer) {
+        if (memo.getAuthor().getId().equals(viewer.id())) return true;
+        if (viewer.isMemberOf(memo.getGroupId())) return true;
+        return memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), viewer.id());
+    }
+
+    /** 수정 권한: 모임 메모는 현재 모임 멤버, 개인 메모는 작성자. */
+    private boolean canEdit(Memo memo, Viewer viewer) {
+        if (memo.getGroupId() != null) {
+            return viewer.isMemberOf(memo.getGroupId());
+        }
+        return memo.getAuthor().getId().equals(viewer.id());
+    }
+
     private void validateAccess(Memo memo, UUID userId) {
-        if (!canRead(memo, userId)) {
-            throw new UnauthorizedAccessException("해당 메모에 접근할 수 있는 권한이 없습니다.");
+        boolean readable = memo.getAuthor().getId().equals(userId)
+                || memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), userId)
+                || isCurrentGroupMember(memo, userId);
+        if (!readable) {
+            throw new UnauthorizedAccessException(NO_READ_PERMISSION);
         }
     }
 
-    /** 수정 권한: 작성자, 또는 그룹 메모의 그룹 멤버. 공유받은 사용자는 읽기 전용입니다. */
+    /** 수정 권한: 모임 메모는 현재 모임 멤버만 (나간·강퇴된 작성자도 불가), 개인 메모는 작성자만. */
     private void validateEditAccess(Memo memo, UUID userId) {
-        if (memo.getAuthor().getId().equals(userId)) return;
-        if (memo.getGroupId() != null
-                && groupMemberRepository.existsByGroup_IdAndUser_Id(memo.getGroupId(), userId)) {
-            return;
+        if (memo.getGroupId() != null) {
+            if (isCurrentGroupMember(memo, userId)) return;
+            if (memo.getAuthor().getId().equals(userId)) {
+                throw new UnauthorizedAccessException("모임을 나가서 이 모임 메모는 고칠 수 없어요. 삭제는 할 수 있어요.");
+            }
+            throw new UnauthorizedAccessException(NO_EDIT_PERMISSION);
         }
-        throw new UnauthorizedAccessException("해당 메모를 수정할 수 있는 권한이 없습니다.");
+        if (!memo.getAuthor().getId().equals(userId)) {
+            throw new UnauthorizedAccessException(NO_EDIT_PERMISSION);
+        }
     }
 
     private void requireGroupMember(UUID groupId, UUID userId) {
         if (!groupRepository.existsById(groupId)) {
-            throw new ResourceNotFoundException("그룹", groupId);
+            throw new ItemNotFoundException("모임을 찾을 수 없어요.");
         }
         if (!groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)) {
-            throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
+            throw new UnauthorizedAccessException("모임 멤버만 할 수 있어요.");
         }
     }
 
     /**
-     * 태그할 메모 목록을 확인합니다. 요청자가 읽을 수 있는 메모만 태그할 수 있습니다.
-     * 이미 태그되어 있던 메모는(권한이 나중에 사라졌더라도) 그대로 유지할 수 있고, 존재하지 않는 ID 는 무시합니다.
+     * 태그할 메모 목록을 확인합니다. 요청자가 읽을 수 있는 메모만 새로 태그할 수 있고, 존재하지 않는 ID 는 무시합니다.
+     * 수정할 때 이미 태그되어 있던 메모 중 요청자가 읽을 수 없는 것(응답에서 숨겨진 것)은 요청에 없어도 그대로 둡니다.
      */
-    private List<Memo> resolveTaggedMemos(List<UUID> taggedMemoIds, UUID userId, Memo current) {
+    private List<Memo> resolveTaggedMemos(List<UUID> taggedMemoIds, Viewer viewer, Memo current) {
         List<Memo> result = new ArrayList<>();
-        if (taggedMemoIds == null || taggedMemoIds.isEmpty()) {
-            return result;
-        }
         Set<UUID> alreadyTagged = new HashSet<>();
         if (current != null && current.getTaggedMemos() != null) {
-            current.getTaggedMemos().forEach(m -> alreadyTagged.add(m.getId()));
+            for (Memo existing : current.getTaggedMemos()) {
+                alreadyTagged.add(existing.getId());
+                if (!canRead(existing, viewer)) {
+                    result.add(existing);
+                }
+            }
+        }
+        if (taggedMemoIds == null || taggedMemoIds.isEmpty()) {
+            return result;
         }
         Set<UUID> ids = new LinkedHashSet<>(taggedMemoIds);
         ids.remove(null);
@@ -361,8 +535,11 @@ public class MemoService {
             if (current != null && tagged.getId().equals(current.getId())) {
                 continue; // 자기 자신은 태그하지 않는다
             }
-            if (!alreadyTagged.contains(tagged.getId()) && !canRead(tagged, userId)) {
-                throw new UnauthorizedAccessException("접근 권한이 없는 메모는 태그할 수 없습니다.");
+            if (result.contains(tagged)) {
+                continue;
+            }
+            if (!alreadyTagged.contains(tagged.getId()) && !canRead(tagged, viewer)) {
+                throw new UnauthorizedAccessException("볼 수 없는 메모는 언급할 수 없어요.");
             }
             result.add(tagged);
         }
@@ -370,9 +547,13 @@ public class MemoService {
     }
 
     /**
-     * 메모를 연결할 일정 목록을 확인합니다. 요청자가 볼 수 있는 일정(작성자/참여자/그룹 멤버)에만 새로 연결할 수 있습니다.
+     * 메모 쪽에서 연결할 수 있는 일정만 고릅니다.
+     * - 내가 만든 일정
+     * - 모임 일정: 같은 모임의 메모이고 내가 그 모임의 현재 멤버일 때
+     * - 이미 이 메모와 연결된 일정
+     * 참여자로만 들어간 남의 일정에는 연결하지 않습니다 (요청에 있어도 건너뜀). 없는 ID 도 무시합니다.
      */
-    private List<Schedule> resolveSchedulesToTag(List<UUID> scheduleIds, UUID userId, Memo current) {
+    private List<Schedule> resolveSchedulesToLink(List<UUID> scheduleIds, Viewer viewer, UUID memoGroupId, Memo current) {
         List<Schedule> result = new ArrayList<>();
         if (scheduleIds == null || scheduleIds.isEmpty()) {
             return result;
@@ -380,24 +561,72 @@ public class MemoService {
         Set<UUID> ids = new LinkedHashSet<>(scheduleIds);
         ids.remove(null);
         for (Schedule schedule : scheduleRepository.findAllById(ids)) {
-            boolean alreadyLinked = current != null && schedule.getTaggedMemos() != null
-                    && schedule.getTaggedMemos().stream().anyMatch(m -> m.getId().equals(current.getId()));
-            if (!alreadyLinked && !canAccessSchedule(schedule, userId)) {
-                throw new UnauthorizedAccessException("접근 권한이 없는 일정에는 메모를 연결할 수 없습니다.");
+            boolean alreadyLinked = current != null && isLinked(schedule, current);
+            if (alreadyLinked || canLinkSchedule(schedule, viewer, memoGroupId)) {
+                result.add(schedule);
             }
-            result.add(schedule);
         }
         return result;
     }
 
-    private boolean canAccessSchedule(Schedule schedule, UUID userId) {
-        if (schedule.getAuthor().getId().equals(userId)) return true;
-        if (schedule.getParticipants() != null
-                && schedule.getParticipants().stream().anyMatch(p -> p.getId().equals(userId))) {
-            return true;
-        }
+    private boolean canLinkSchedule(Schedule schedule, Viewer viewer, UUID memoGroupId) {
+        if (schedule.getAuthor().getId().equals(viewer.id())) return true;
         return schedule.getGroupId() != null
-                && groupMemberRepository.existsByGroup_IdAndUser_Id(schedule.getGroupId(), userId);
+                && schedule.getGroupId().equals(memoGroupId)
+                && viewer.isMemberOf(schedule.getGroupId());
+    }
+
+    private static boolean isLinked(Schedule schedule, Memo memo) {
+        return schedule.getTaggedMemos() != null
+                && schedule.getTaggedMemos().stream().anyMatch(m -> m.getId().equals(memo.getId()));
+    }
+
+    /** 일정 열람 권한: 작성자, (모임 일정) 현재 모임 멤버, 참여자 */
+    private boolean canSeeSchedule(Schedule schedule, Viewer viewer) {
+        if (schedule.getAuthor().getId().equals(viewer.id())) return true;
+        if (viewer.isMemberOf(schedule.getGroupId())) return true;
+        return schedule.getParticipants() != null
+                && schedule.getParticipants().stream().anyMatch(p -> p.getId().equals(viewer.id()));
+    }
+
+    /**
+     * 메모 수정 시 일정 연결을 맞춘다.
+     * 메모 쪽에서 만든 연결(mentionedScheduleIds)만 끊고, 일정 쪽에서 만든 연결은 메모를 고쳐도 그대로 둔다.
+     */
+    private void syncMentionedSchedules(Memo memo, List<UUID> requestedIds, List<Schedule> linkable) {
+        Set<UUID> requested = new HashSet<>(requestedIds);
+        requested.remove(null);
+        Set<UUID> previousMentions = memo.getMentionedScheduleIds() != null
+                ? new HashSet<>(memo.getMentionedScheduleIds()) : new HashSet<>();
+
+        // 1) 본문에서 빠진 메모 쪽 연결을 끊는다.
+        Set<UUID> toUnlink = new HashSet<>(previousMentions);
+        toUnlink.removeAll(requested);
+        if (!toUnlink.isEmpty()) {
+            for (Schedule schedule : scheduleRepository.findAllById(toUnlink)) {
+                if (schedule.getTaggedMemos() != null) {
+                    schedule.getTaggedMemos().removeIf(m -> m.getId().equals(memo.getId()));
+                }
+            }
+        }
+
+        // 2) 새로 언급한 일정에 연결한다. 일정 쪽에서 이미 연결해 둔 것은 메모 쪽 연결로 바꾸지 않는다.
+        Set<UUID> mentions = new HashSet<>();
+        for (Schedule schedule : linkable) {
+            if (!isLinked(schedule, memo)) {
+                linkSchedule(schedule, memo);
+                mentions.add(schedule.getId());
+            } else if (previousMentions.contains(schedule.getId())) {
+                mentions.add(schedule.getId());
+            }
+        }
+        memo.replaceMentionedSchedules(mentions);
+    }
+
+    private void linkSchedule(Schedule schedule, Memo memo) {
+        if (schedule.getTaggedMemos() != null && !schedule.getTaggedMemos().contains(memo)) {
+            schedule.getTaggedMemos().add(memo);
+        }
     }
 
     private String handleImageUpload(MultipartFile image, String currentImageUrl) {
@@ -407,7 +636,7 @@ public class MemoService {
         return "/uploads/" + fileService.storeFile(image);
     }
 
-    /** 태그 정리: 앞뒤 공백 제거, 빈 값/중복 제거. 길이·개수 제한을 넘으면 400. */
+    /** 태그 정리: 앞뒤 공백 제거, 빈 값/중복 제거. 길이(코드 포인트)·개수 제한을 넘으면 400. */
     private List<String> normalizeTags(List<String> tagNames) {
         List<String> result = new ArrayList<>();
         if (tagNames == null) return result;
@@ -416,13 +645,13 @@ public class MemoService {
             if (name == null) continue;
             String trimmed = name.trim();
             if (trimmed.isEmpty()) continue;
-            if (trimmed.length() > MAX_TAG_LENGTH) {
-                throw new BadRequestException("태그는 " + MAX_TAG_LENGTH + "자를 초과할 수 없습니다.");
+            if (CodePointSizeValidator.length(trimmed) > MAX_TAG_LENGTH) {
+                throw new BadRequestException("태그는 " + MAX_TAG_LENGTH + "자까지 쓸 수 있어요.");
             }
             seen.add(trimmed);
         }
         if (seen.size() > MAX_TAG_COUNT) {
-            throw new BadRequestException("태그는 " + MAX_TAG_COUNT + "개까지 등록할 수 있습니다.");
+            throw new BadRequestException("태그는 " + MAX_TAG_COUNT + "개까지 등록할 수 있어요.");
         }
         result.addAll(seen);
         return result;
@@ -440,15 +669,16 @@ public class MemoService {
         memoTagRepository.saveAll(tags);
     }
 
-    private MemoAiInsight updateOrCreateInfo(Memo memo, Map<String, Object> result) {
-        String ocrText = textOf(result, "ocrText");
-        String summary = textOf(result, "summary");
+    private MemoAiInsight updateOrCreateInfo(Memo memo, AiAnalysisSupport.Analyzed analyzed) {
+        String ocrText = analyzed.ocrText();
+        String summary = analyzed.summary();
         // Gemini 가 keywords 를 null 로 돌려줘도 빈 목록으로 저장한다.
-        List<String> keywords = GeminiService.toKeywords(result != null ? result.get("keywords") : null);
+        List<String> keywords = analyzed.keywords();
+        String sourceHash = analyzed.sourceHash();
 
         return memoAiInsightRepository.findById(memo.getId())
                 .map(existing -> {
-                    existing.update(ocrText, summary, keywords);
+                    existing.update(ocrText, summary, keywords, sourceHash);
                     return existing;
                 })
                 .orElseGet(() -> MemoAiInsight.builder()
@@ -456,50 +686,56 @@ public class MemoService {
                         .ocrText(ocrText)
                         .summary(summary)
                         .keywords(keywords)
+                        .sourceHash(sourceHash)
                         .build());
-    }
-
-    private static String textOf(Map<String, Object> result, String key) {
-        Object value = result != null ? result.get(key) : null;
-        return value != null ? value.toString() : "";
-    }
-
-    private void syncSchedules(Memo memo, List<Schedule> newSchedules) {
-        List<Schedule> oldSchedules = scheduleRepository.findByTaggedMemosContains(memo);
-
-        for (Schedule old : oldSchedules) {
-            if (!newSchedules.contains(old)) {
-                old.getTaggedMemos().remove(memo);
-                scheduleRepository.save(old);
-            }
-        }
-
-        for (Schedule newSch : newSchedules) {
-            if (newSch.getTaggedMemos() != null && !newSch.getTaggedMemos().contains(memo)) {
-                newSch.getTaggedMemos().add(memo);
-                scheduleRepository.save(newSch);
-            }
-        }
     }
 
     private Set<UUID> favoriteMemoIds(UUID userId) {
         return new HashSet<>(memoFavoriteRepository.findMemoIdsByUserId(userId));
     }
 
+    private static boolean contains(String text, String keyword) {
+        return text != null && text.toLowerCase(Locale.ROOT).contains(keyword);
+    }
+
+    private static String shortTitle(String title) {
+        String trimmed = title == null ? "" : title.trim();
+        if (CodePointSizeValidator.length(trimmed) <= NOTIFICATION_TITLE_LENGTH) {
+            return trimmed;
+        }
+        return CodePointSizeValidator.truncate(trimmed, NOTIFICATION_TITLE_LENGTH) + "…";
+    }
+
+    /** 작성자: 모두 true(모임을 나간 작성자는 수정·태그 false). 모임 멤버: 수정·태그. 공유받은 사람: 모두 false. */
+    private MemoResponse.Permissions permissionsOf(Memo memo, Viewer viewer) {
+        boolean isAuthor = memo.getAuthor().getId().equals(viewer.id());
+        boolean edit = canEdit(memo, viewer);
+        return MemoResponse.Permissions.builder()
+                .edit(edit)
+                .tag(edit)
+                .delete(isAuthor)
+                .share(isAuthor)
+                .analyze(isAuthor)
+                .build();
+    }
+
     /**
-     * @param viewerId    응답을 받는 사용자 (isFavorite, sharedWith 는 이 사용자 기준)
+     * @param viewer      응답을 받는 사용자 (isFavorite, sharedWith, permissions, 연결 목록은 이 사용자 기준)
      * @param favoriteIds 미리 조회해 둔 viewer 의 즐겨찾기 메모 ID 목록. null 이면 이 메모에 대해 개별 조회합니다.
      */
-    private MemoResponse convertToResponse(Memo memo, UUID viewerId, Set<UUID> favoriteIds) {
+    private MemoResponse convertToResponse(Memo memo, Viewer viewer, Set<UUID> favoriteIds) {
+        UUID viewerId = viewer.id();
         List<String> tags = memoTagRepository.findAllByMemo(memo).stream()
                 .map(MemoTag::getName)
                 .collect(Collectors.toList());
 
         MemoAiInsight insight = memoAiInsightRepository.findById(memo.getId()).orElse(null);
 
+        // 연결된 메모·일정은 요청한 사용자가 열 수 있는 것만 담는다 (비공개 제목 노출 방지).
         List<MemoResponse.MemoSummaryResponse> memoSummaries = new ArrayList<>();
         if (memo.getTaggedMemos() != null) {
             memoSummaries = memo.getTaggedMemos().stream()
+                .filter(m -> canRead(m, viewer))
                 .map(m -> MemoResponse.MemoSummaryResponse.builder()
                     .id(m.getId())
                     .title(m.getTitle())
@@ -507,8 +743,8 @@ public class MemoService {
                 .collect(Collectors.toList());
         }
 
-        List<Schedule> schedules = scheduleRepository.findByTaggedMemosContains(memo);
-        List<MemoResponse.ScheduleSummaryResponse> scheduleSummaries = schedules.stream()
+        List<MemoResponse.ScheduleSummaryResponse> scheduleSummaries = scheduleRepository.findByTaggedMemosContains(memo).stream()
+                .filter(s -> canSeeSchedule(s, viewer))
                 .map(s -> MemoResponse.ScheduleSummaryResponse.builder()
                     .id(s.getId())
                     .title(s.getTitle())
@@ -532,7 +768,7 @@ public class MemoService {
                             .build())
                     .collect(Collectors.toList());
         }
-        
+
         return MemoResponse.builder()
                 .id(memo.getId())
                 .title(memo.getTitle())
@@ -552,6 +788,8 @@ public class MemoService {
                 .taggedSchedules(scheduleSummaries)
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
+                .version(memo.getVersion() != null ? memo.getVersion() : 0L)
+                .permissions(permissionsOf(memo, viewer))
                 .build();
     }
 
@@ -561,6 +799,8 @@ public class MemoService {
                 .summary(insight.getSummary())
                 .keywords(insight.getKeywords() != null ? insight.getKeywords() : List.of())
                 .analyzedAt(insight.getAnalyzedAt())
+                .stale(insight.getMemo() != null && AiAnalysisSupport.isStale(insight.getSourceHash(), insight.getAnalyzedAt(),
+                        insight.getMemo().getContent(), insight.getMemo().getImageUrl(), insight.getMemo().getUpdatedAt()))
                 .build();
     }
 }

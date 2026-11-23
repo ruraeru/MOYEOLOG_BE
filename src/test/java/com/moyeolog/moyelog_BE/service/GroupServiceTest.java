@@ -1,32 +1,44 @@
 package com.moyeolog.moyelog_BE.service;
 
+import com.moyeolog.moyelog_BE.dto.GroupInviteRequest;
 import com.moyeolog.moyelog_BE.dto.GroupRequest;
 import com.moyeolog.moyelog_BE.dto.GroupResponse;
 import com.moyeolog.moyelog_BE.entity.Group;
+import com.moyeolog.moyelog_BE.entity.GroupBlock;
+import com.moyeolog.moyelog_BE.entity.GroupInvitation;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.User;
-import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
-import com.moyeolog.moyelog_BE.dto.GroupInviteRequest;
-import com.moyeolog.moyelog_BE.entity.GroupInvitation;
 import com.moyeolog.moyelog_BE.enums.InvitationStatus;
+import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationType;
+import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
 import com.moyeolog.moyelog_BE.exception.ConflictException;
+import com.moyeolog.moyelog_BE.exception.MoyeologException;
+import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.http.HttpStatus;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,6 +53,10 @@ class GroupServiceTest {
     @Mock private ScheduleRepository scheduleRepository;
     @Mock private GroupTopicCommentRepository groupTopicCommentRepository;
     @Mock private FileService fileService;
+    @Mock private GroupBlockRepository groupBlockRepository;
+    @Mock private FriendRepository friendRepository;
+    @Mock private GroupImageService groupImageService;
+    @Mock private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private GroupService groupService;
 
@@ -50,103 +66,250 @@ class GroupServiceTest {
     @BeforeEach
     void setUp() {
         userId = UUID.randomUUID();
-        user = User.builder().id(userId).nickname("testUser").build();
+        user = User.builder().id(userId).nickname("testUser").customId("abcd1234").build();
     }
 
+    private Group ownedGroup(UUID groupId) {
+        return Group.builder().id(groupId).name("모임").createdBy(user).build();
+    }
+
+    private static HttpStatus statusOf(Throwable t) {
+        return ((MoyeologException) t).getStatus();
+    }
+
+    // ─── 만들기 ───────────────────────────────────────────────────
+
     @Test
-    @DisplayName("그룹 생성 성공")
+    @DisplayName("모임 생성 성공 - 이름 trim, 색 기본값 indigo, myRole OWNER, 멤버 customId")
     void createGroup_Success() {
-        // given
-        GroupRequest request = GroupRequest.builder()
-                .name("Test Group")
-                .description("Desc")
-                .build();
-        Group group = Group.builder()
-                .id(UUID.randomUUID())
-                .name(request.getName())
-                .createdBy(user)
-                .build();
-
         given(userRepository.findById(userId)).willReturn(Optional.of(user));
-        given(groupRepository.save(any(Group.class))).willReturn(group);
+        given(groupRepository.save(any(Group.class))).willAnswer(inv -> {
+            Group g = inv.getArgument(0);
+            g.setId(UUID.randomUUID());
+            return g;
+        });
+        given(groupMemberRepository.findByGroup(any(Group.class))).willAnswer(inv ->
+                List.of(GroupMember.builder().group(inv.getArgument(0)).user(user).build()));
 
-        // when
-        GroupResponse response = groupService.createGroup(userId, request);
+        GroupResponse response = groupService.createGroup(userId, GroupRequest.builder().name("  Test Group  ").build());
 
-        // then
-        assertThat(response.getName()).isEqualTo(request.getName());
-        verify(groupRepository).save(any(Group.class));
+        assertThat(response.getName()).isEqualTo("Test Group");
+        assertThat(response.getColorTheme()).isEqualTo("indigo");
+        assertThat(response.getMyRole()).isEqualTo("OWNER");
+        assertThat(response.getMembers().get(0).getCustomId()).isEqualTo("abcd1234");
         verify(groupMemberRepository).save(any(GroupMember.class));
     }
 
     @Test
-    @DisplayName("그룹 상세 조회 실패 - 권한 없음")
+    @DisplayName("모임 이름은 코드 포인트로 50자까지 (이모지 30개 허용), 보이지 않는 문자만이면 400")
+    void normalizeName() {
+        assertThat(GroupService.normalizeName("📚".repeat(30))).isEqualTo("📚".repeat(30));
+        assertThat(GroupService.normalizeName("가".repeat(50))).hasSize(50);
+        assertThatThrownBy(() -> GroupService.normalizeName("가".repeat(51))).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> GroupService.normalizeName("​​")).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> GroupService.normalizeName("   ")).isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    @DisplayName("colorTheme 은 정해진 키만 허용")
+    void normalizeColorTheme() {
+        assertThat(GroupService.normalizeColorTheme(null, "indigo")).isEqualTo("indigo");
+        assertThat(GroupService.normalizeColorTheme("rose", "indigo")).isEqualTo("rose");
+        assertThatThrownBy(() -> GroupService.normalizeColorTheme("url(javascript:alert(1))", "indigo"))
+                .isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> GroupService.normalizeColorTheme("a".repeat(101), "indigo"))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    @DisplayName("모임 상세 조회 실패 - 비멤버는 403")
     void getGroup_Unauthorized() {
-        // given
         UUID groupId = UUID.randomUUID();
-        Group group = Group.builder().id(groupId).build();
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(Group.builder().id(groupId).build()));
         given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
 
-        // when & then (비멤버는 403)
         assertThatThrownBy(() -> groupService.getGroup(userId, groupId))
                 .isInstanceOf(UnauthorizedAccessException.class);
     }
 
+    // ─── 초대 코드 ────────────────────────────────────────────────
+
     @Test
-    @DisplayName("멤버 강퇴 성공")
-    void kickMember_Success() {
-        // given
+    @DisplayName("초대 코드 가입 - groupId 반환, 그 모임 대기 초대 정리")
+    void joinByCode_Success() {
         UUID groupId = UUID.randomUUID();
-        Group group = Group.builder().id(groupId).createdBy(user).build();
-        
-        UUID targetUserId = UUID.randomUUID();
-        User targetUser = User.builder().id(targetUserId).nickname("target").build();
-        GroupMember targetMember = GroupMember.builder().id(UUID.randomUUID()).group(group).user(targetUser).build();
+        Group group = Group.builder().id(groupId).createdBy(User.builder().id(UUID.randomUUID()).build()).build();
+        given(groupRepository.findByInviteCode("ABC123")).willReturn(Optional.of(group));
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
 
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
-        group.setInviteCode("OLDCOD");
-        given(groupMemberRepository.findAllByGroup_IdAndUser_Id(groupId, targetUserId)).willReturn(java.util.List.of(targetMember));
-
-        // when
-        groupService.kickMember(userId, groupId, targetUserId);
-
-        // then
-        verify(groupMemberRepository).deleteAll(java.util.List.of(targetMember));
-        // 강퇴 후에는 초대 코드가 새로 발급된다
-        assertThat(group.getInviteCode()).isNotNull().isNotEqualTo("OLDCOD").hasSize(6);
+        assertThat(groupService.joinGroupByCode(userId, " abc123 ").getGroupId()).isEqualTo(groupId);
+        verify(groupMemberRepository).save(any(GroupMember.class));
+        verify(groupInvitationRepository).deletePendingForInvitee(groupId, userId);
     }
 
     @Test
-    @DisplayName("멤버 강퇴 실패 - 그룹장 아님")
-    void kickMember_NotOwner_Fail() {
-        // given
+    @DisplayName("초대 코드 가입 - 이미 멤버 409(groupId 포함), 차단된 사람 403, 없는 코드 404")
+    void joinByCode_Failures() {
         UUID groupId = UUID.randomUUID();
-        User owner = User.builder().id(UUID.randomUUID()).build();
-        Group group = Group.builder().id(groupId).createdBy(owner).build(); // Not the current user
-        
+        Group group = Group.builder().id(groupId).createdBy(User.builder().id(UUID.randomUUID()).build()).build();
+        given(groupRepository.findByInviteCode("ABC123")).willReturn(Optional.of(group));
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        assertThatThrownBy(() -> groupService.joinGroupByCode(userId, "ABC123"))
+                .isInstanceOfSatisfying(GroupErrors.AlreadyMemberException.class, e -> {
+                    assertThat(e.getGroupId()).isEqualTo(groupId);
+                    assertThat(e.getMessage()).isEqualTo("이미 참여한 모임이에요.");
+                });
+
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
+        given(groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        assertThatThrownBy(() -> groupService.joinGroupByCode(userId, "ABC123"))
+                .isInstanceOf(UnauthorizedAccessException.class)
+                .hasMessage("이 모임에 다시 들어갈 수 없어요.");
+
+        assertThatThrownBy(() -> groupService.joinGroupByCode(userId, "ZZZZZZ"))
+                .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND))
+                .hasMessage("초대 코드가 맞지 않거나 만료됐어요.");
+        verify(groupMemberRepository, never()).save(any(GroupMember.class));
+    }
+
+    @Test
+    @DisplayName("초대 코드 미리 보기 - 모임 정보와 alreadyMember")
+    void preview() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).nickname("방장").build();
+        Group group = Group.builder().id(groupId).name("캡스톤").colorTheme("rose").createdBy(owner).build();
+        given(groupRepository.findByInviteCode("ABC123")).willReturn(Optional.of(group));
+        given(groupMemberRepository.findByGroup(group)).willReturn(List.of(GroupMember.builder().group(group).user(owner).build()));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
+
+        var preview = groupService.previewByCode(userId, "abc123");
+        assertThat(preview.getName()).isEqualTo("캡스톤");
+        assertThat(preview.getOwnerNickname()).isEqualTo("방장");
+        assertThat(preview.getMemberCount()).isEqualTo(1);
+        assertThat(preview.isAlreadyMember()).isFalse();
+        assertThat(preview.isBlocked()).isFalse();
+
+        given(groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        assertThat(groupService.previewByCode(userId, "abc123").isBlocked()).isTrue();
+
+        assertThatThrownBy(() -> groupService.previewByCode(userId, null))
+                .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    // ─── 내보내기·나가기·삭제 ─────────────────────────────────────
+
+    @Test
+    @DisplayName("멤버 내보내기 - 차단 등록, 받은·보낸 대기 초대 정리, 코드 재발급, 알림")
+    void kickMember_Success() {
+        UUID groupId = UUID.randomUUID();
+        Group group = ownedGroup(groupId);
+        group.setInviteCode("OLDCOD");
         UUID targetUserId = UUID.randomUUID();
 
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.deleteMembership(groupId, targetUserId)).willReturn(1);
 
-        // when & then
+        groupService.kickMember(userId, groupId, targetUserId);
+
+        verify(groupBlockRepository).save(any(GroupBlock.class));
+        verify(groupInvitationRepository).deletePendingForInvitee(groupId, targetUserId);
+        verify(groupInvitationRepository).deletePendingFromInviter(groupId, targetUserId);
+        assertThat(group.getInviteCode()).isNotNull().isNotEqualTo("OLDCOD").hasSize(6);
+        ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
+        verify(eventPublisher).publishEvent(event.capture());
+        assertThat(event.getValue().type()).isEqualTo(NotificationType.GROUP_KICKED);
+        assertThat(event.getValue().recipientId()).isEqualTo(targetUserId);
+        assertThat(event.getValue().link()).isEqualTo("/groups");
+    }
+
+    @Test
+    @DisplayName("멤버 내보내기 - 이미 나간 사람(동시 요청)은 500 이 아니라 404")
+    void kickMember_AlreadyGone_NotFound() {
+        UUID groupId = UUID.randomUUID();
+        UUID targetUserId = UUID.randomUUID();
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(ownedGroup(groupId)));
+        given(groupMemberRepository.deleteMembership(groupId, targetUserId)).willReturn(0);
+
         assertThatThrownBy(() -> groupService.kickMember(userId, groupId, targetUserId))
+                .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
+        verify(groupBlockRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("멤버 내보내기 실패 - 방장 아님 403, 자기 자신 400")
+    void kickMember_Failures() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).build();
+        Group group = Group.builder().id(groupId).createdBy(owner).build();
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        assertThatThrownBy(() -> groupService.kickMember(userId, groupId, UUID.randomUUID()))
+                .isInstanceOf(UnauthorizedAccessException.class);
+
+        UUID ownGroupId = UUID.randomUUID();
+        given(groupRepository.findByIdForUpdate(ownGroupId)).willReturn(Optional.of(ownedGroup(ownGroupId)));
+        assertThatThrownBy(() -> groupService.kickMember(userId, ownGroupId, userId))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    @DisplayName("나가기 - 방장 400, 이미 나간 경우(동시 요청) 403, 성공 시 보낸 대기 초대 정리")
+    void leaveGroup() {
+        UUID groupId = UUID.randomUUID();
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(ownedGroup(groupId)));
+        assertThatThrownBy(() -> groupService.leaveGroup(userId, groupId)).isInstanceOf(BadRequestException.class);
+
+        UUID otherGroupId = UUID.randomUUID();
+        Group other = Group.builder().id(otherGroupId).createdBy(User.builder().id(UUID.randomUUID()).build()).build();
+        given(groupRepository.findByIdForUpdate(otherGroupId)).willReturn(Optional.of(other));
+        given(groupMemberRepository.deleteMembership(otherGroupId, userId)).willReturn(1, 0);
+
+        groupService.leaveGroup(userId, otherGroupId);
+        verify(groupInvitationRepository).deletePendingFromInviter(otherGroupId, userId);
+        assertThatThrownBy(() -> groupService.leaveGroup(userId, otherGroupId))
                 .isInstanceOf(UnauthorizedAccessException.class);
     }
 
     @Test
-    @DisplayName("멤버 강퇴 실패 - 자기 자신 강퇴 불가")
-    void kickMember_Self_Fail() {
-        // given
+    @DisplayName("모임 삭제 - 방장만, 이미 삭제된 모임(동시 요청)은 404")
+    void deleteGroup() {
         UUID groupId = UUID.randomUUID();
-        Group group = Group.builder().id(groupId).createdBy(user).build();
-        
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        User owner = User.builder().id(UUID.randomUUID()).build();
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(Group.builder().id(groupId).createdBy(owner).build()));
+        assertThatThrownBy(() -> groupService.deleteGroup(userId, groupId))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(groupRepository, never()).delete(any(Group.class));
 
-        // when & then
-        assertThatThrownBy(() -> groupService.kickMember(userId, groupId, userId))
-                .isInstanceOf(BadRequestException.class);
+        UUID goneId = UUID.randomUUID();
+        given(groupRepository.findByIdForUpdate(goneId)).willReturn(Optional.empty());
+        assertThatThrownBy(() -> groupService.deleteGroup(userId, goneId))
+                .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
     }
+
+    @Test
+    @DisplayName("모임 수정 - 방장만, 두 이미지 중 하나라도 이미지가 아니면 아무 파일도 저장하지 않는다")
+    void updateGroup() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).build();
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(Group.builder().id(groupId).createdBy(owner).build()));
+        assertThatThrownBy(() -> groupService.updateGroup(userId, groupId,
+                GroupRequest.builder().name("new").build(), null, null))
+                .isInstanceOf(UnauthorizedAccessException.class);
+
+        UUID ownId = UUID.randomUUID();
+        given(groupRepository.findById(ownId)).willReturn(Optional.of(ownedGroup(ownId)));
+        var good = new org.springframework.mock.web.MockMultipartFile("image", new byte[]{1});
+        var bad = new org.springframework.mock.web.MockMultipartFile("bgImage", new byte[]{2});
+        org.mockito.Mockito.lenient().doThrow(new BadRequestException("x")).when(groupImageService).requireImage(bad);
+        assertThatThrownBy(() -> groupService.updateGroup(userId, ownId, GroupRequest.builder().name("n").build(), good, bad))
+                .isInstanceOf(BadRequestException.class);
+        verify(groupImageService, never()).store(any());
+    }
+
+    // ─── 초대 ─────────────────────────────────────────────────────
 
     private GroupInvitation invitation(Group group, InvitationStatus status) {
         return GroupInvitation.builder()
@@ -158,27 +321,33 @@ class GroupServiceTest {
                 .build();
     }
 
+    private void stubInvitationLock(Group group, GroupInvitation invitation) {
+        given(groupInvitationRepository.findGroupIdById(invitation.getId())).willReturn(Optional.of(group.getId()));
+        given(groupRepository.findByIdForUpdate(group.getId())).willReturn(Optional.of(group));
+        given(groupInvitationRepository.findByIdForUpdate(invitation.getId())).willReturn(Optional.of(invitation));
+    }
+
     @Test
-    @DisplayName("초대 수락 - 멤버십이 한 번만 생성된다")
+    @DisplayName("초대 수락 - 멤버십이 한 번만 생성되고 같은 모임 대기 초대 정리")
     void acceptInvitation_Success() {
         Group group = Group.builder().id(UUID.randomUUID()).build();
         GroupInvitation invitation = invitation(group, InvitationStatus.PENDING);
-        given(groupInvitationRepository.findById(invitation.getId())).willReturn(Optional.of(invitation));
-        given(groupMemberRepository.existsByGroup_IdAndUser_Id(group.getId(), userId)).willReturn(false);
+        stubInvitationLock(group, invitation);
 
         groupService.acceptInvitation(userId, invitation.getId());
 
         assertThat(invitation.getStatus()).isEqualTo(InvitationStatus.ACCEPTED);
+        assertThat(invitation.getPendingFlag()).isNull();
         verify(groupMemberRepository).save(any(GroupMember.class));
+        verify(groupInvitationRepository).deletePendingForInvitee(group.getId(), userId);
     }
 
     @Test
-    @DisplayName("초대 이중 수락 - 두 번째 수락은 409 이고 멤버십을 또 만들지 않는다")
+    @DisplayName("초대 이중 처리 - 수락 후 수락·거절은 409, 멤버십은 한 번")
     void acceptInvitation_Twice_Fail() {
         Group group = Group.builder().id(UUID.randomUUID()).build();
         GroupInvitation invitation = invitation(group, InvitationStatus.PENDING);
-        given(groupInvitationRepository.findById(invitation.getId())).willReturn(Optional.of(invitation));
-        given(groupMemberRepository.existsByGroup_IdAndUser_Id(group.getId(), userId)).willReturn(false);
+        stubInvitationLock(group, invitation);
 
         groupService.acceptInvitation(userId, invitation.getId());
 
@@ -186,7 +355,8 @@ class GroupServiceTest {
                 .isInstanceOf(ConflictException.class);
         assertThatThrownBy(() -> groupService.rejectInvitation(userId, invitation.getId()))
                 .isInstanceOf(ConflictException.class);
-        verify(groupMemberRepository, org.mockito.Mockito.times(1)).save(any(GroupMember.class));
+        assertThat(invitation.getStatus()).isEqualTo(InvitationStatus.ACCEPTED);
+        verify(groupMemberRepository, times(1)).save(any(GroupMember.class));
     }
 
     @Test
@@ -194,101 +364,191 @@ class GroupServiceTest {
     void acceptInvitation_AlreadyMember_NoSecondMembership() {
         Group group = Group.builder().id(UUID.randomUUID()).build();
         GroupInvitation invitation = invitation(group, InvitationStatus.PENDING);
-        given(groupInvitationRepository.findById(invitation.getId())).willReturn(Optional.of(invitation));
+        stubInvitationLock(group, invitation);
         given(groupMemberRepository.existsByGroup_IdAndUser_Id(group.getId(), userId)).willReturn(true);
 
         groupService.acceptInvitation(userId, invitation.getId());
 
         assertThat(invitation.getStatus()).isEqualTo(InvitationStatus.ACCEPTED);
-        verify(groupMemberRepository, org.mockito.Mockito.never()).save(any(GroupMember.class));
+        verify(groupMemberRepository, never()).save(any(GroupMember.class));
     }
 
     @Test
-    @DisplayName("거절한 초대는 수락할 수 없다")
-    void acceptInvitation_Rejected_Fail() {
+    @DisplayName("거절한 초대는 수락할 수 없고, 차단된 사람은 초대를 수락할 수 없다, 지워진 초대는 404")
+    void acceptInvitation_Failures() {
         Group group = Group.builder().id(UUID.randomUUID()).build();
-        GroupInvitation invitation = invitation(group, InvitationStatus.REJECTED);
-        given(groupInvitationRepository.findById(invitation.getId())).willReturn(Optional.of(invitation));
-
-        assertThatThrownBy(() -> groupService.acceptInvitation(userId, invitation.getId()))
+        GroupInvitation rejected = invitation(group, InvitationStatus.REJECTED);
+        stubInvitationLock(group, rejected);
+        assertThatThrownBy(() -> groupService.acceptInvitation(userId, rejected.getId()))
                 .isInstanceOf(ConflictException.class);
-        verify(groupMemberRepository, org.mockito.Mockito.never()).save(any(GroupMember.class));
+
+        Group blockedGroup = Group.builder().id(UUID.randomUUID()).build();
+        GroupInvitation pending = invitation(blockedGroup, InvitationStatus.PENDING);
+        stubInvitationLock(blockedGroup, pending);
+        given(groupBlockRepository.existsByGroup_IdAndUser_Id(blockedGroup.getId(), userId)).willReturn(true);
+        assertThatThrownBy(() -> groupService.acceptInvitation(userId, pending.getId()))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        assertThat(pending.getStatus()).isEqualTo(InvitationStatus.PENDING);
+
+        UUID gone = UUID.randomUUID();
+        given(groupInvitationRepository.findGroupIdById(gone)).willReturn(Optional.empty());
+        assertThatThrownBy(() -> groupService.acceptInvitation(userId, gone))
+                .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
+        verify(groupMemberRepository, never()).save(any(GroupMember.class));
     }
 
     @Test
-    @DisplayName("초대 - emails 와 userIds 가 모두 비어 있으면 400, null/빈 이메일은 건너뛴다")
+    @DisplayName("초대 - emails 를 보내면 400, userIds 가 비면 400 (이메일로 사용자를 찾지 않는다)")
     void inviteMembers_Validation() {
         UUID groupId = UUID.randomUUID();
-        Group group = Group.builder().id(groupId).createdBy(user).build();
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
-        given(userRepository.findById(userId)).willReturn(Optional.of(user));
-        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
-
         assertThatThrownBy(() -> groupService.inviteMembers(userId, groupId, new GroupInviteRequest()))
                 .isInstanceOf(BadRequestException.class);
-
-        java.util.List<String> onlyBlank = new java.util.ArrayList<>();
-        onlyBlank.add(null);
-        onlyBlank.add("  ");
         assertThatThrownBy(() -> groupService.inviteMembers(userId, groupId,
-                GroupInviteRequest.builder().emails(onlyBlank).build()))
+                GroupInviteRequest.builder().emails(List.of("someone@example.com")).build()))
                 .isInstanceOf(BadRequestException.class);
-        verify(userRepository, org.mockito.Mockito.never()).findAllByEmail(any());
+        assertThatThrownBy(() -> groupService.inviteMembers(userId, groupId,
+                GroupInviteRequest.builder().emails(List.of()).userIds(List.of(UUID.randomUUID())).build()))
+                .isInstanceOf(BadRequestException.class);
+        verify(userRepository, never()).findAllByEmail(any());
+        verify(groupInvitationRepository, never()).save(any());
+    }
+
+    private Group stubInvitableGroup(UUID groupId, User owner) {
+        Group group = Group.builder().id(groupId).name("모임").createdBy(owner).build();
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        return group;
     }
 
     @Test
-    @DisplayName("초대 - userIds 로 초대하면 PENDING 초대가 생성된다")
+    @DisplayName("초대 - 친구에게 PENDING 초대 생성 + GROUP_INVITE 알림")
     void inviteMembers_ByUserIds() {
         UUID groupId = UUID.randomUUID();
-        Group group = Group.builder().id(groupId).createdBy(user).build();
+        Group group = stubInvitableGroup(groupId, user);
         User invitee = User.builder().id(UUID.randomUUID()).nickname("invitee").build();
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
-        given(userRepository.findById(userId)).willReturn(Optional.of(user));
         given(userRepository.findById(invitee.getId())).willReturn(Optional.of(invitee));
-        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
-        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, invitee.getId())).willReturn(false);
-        given(groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)).willReturn(false);
+        given(friendRepository.areFriends(userId, invitee.getId())).willReturn(true);
 
         groupService.inviteMembers(userId, groupId,
-                GroupInviteRequest.builder().userIds(java.util.List.of(invitee.getId())).build());
+                GroupInviteRequest.builder().userIds(List.of(invitee.getId(), invitee.getId())).build());
 
+        verify(groupInvitationRepository, times(1)).save(any(GroupInvitation.class));
+        ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
+        verify(eventPublisher).publishEvent(event.capture());
+        assertThat(event.getValue().type()).isEqualTo(NotificationType.GROUP_INVITE);
+        assertThat(event.getValue().link()).isEqualTo("/notifications?tab=invites");
+        assertThat(event.getValue().message()).contains("testUser").contains("모임");
+    }
+
+    @Test
+    @DisplayName("초대 - 친구가 아니거나 없는 사용자는 같은 400")
+    void inviteMembers_NotFriend() {
+        UUID groupId = UUID.randomUUID();
+        stubInvitableGroup(groupId, user);
+        UUID stranger = UUID.randomUUID();
+        given(friendRepository.areFriends(userId, stranger)).willReturn(false);
+
+        assertThatThrownBy(() -> groupService.inviteMembers(userId, groupId,
+                GroupInviteRequest.builder().userIds(List.of(stranger)).build()))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("친구에게만 초대를 보낼 수 있어요.");
+        verify(groupInvitationRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("초대 - 대기 초대가 있으면 건너뛴다(중복 1건)")
+    void inviteMembers_PendingExists_Skip() {
+        UUID groupId = UUID.randomUUID();
+        Group group = stubInvitableGroup(groupId, user);
+        User invitee = User.builder().id(UUID.randomUUID()).build();
+        given(userRepository.findById(invitee.getId())).willReturn(Optional.of(invitee));
+        given(friendRepository.areFriends(userId, invitee.getId())).willReturn(true);
+        given(groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)).willReturn(true);
+
+        groupService.inviteMembers(userId, groupId, GroupInviteRequest.builder().userIds(List.of(invitee.getId())).build());
+        verify(groupInvitationRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("초대 - 내보내진 사람: 일반 멤버는 403, 방장은 초대하며 차단 해제")
+    void inviteMembers_Blocked() {
+        User owner = User.builder().id(UUID.randomUUID()).build();
+        UUID groupId = UUID.randomUUID();
+        stubInvitableGroup(groupId, owner); // user 는 일반 멤버
+        User kicked = User.builder().id(UUID.randomUUID()).build();
+        given(userRepository.findById(kicked.getId())).willReturn(Optional.of(kicked));
+        given(friendRepository.areFriends(userId, kicked.getId())).willReturn(true);
+        given(groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, kicked.getId())).willReturn(true);
+
+        assertThatThrownBy(() -> groupService.inviteMembers(userId, groupId,
+                GroupInviteRequest.builder().userIds(List.of(kicked.getId())).build()))
+                .isInstanceOf(UnauthorizedAccessException.class)
+                .hasMessage("이 모임에 다시 들어갈 수 없어요.");
+        verify(groupInvitationRepository, never()).save(any());
+
+        UUID ownGroupId = UUID.randomUUID();
+        stubInvitableGroup(ownGroupId, user); // user 가 방장
+        given(groupBlockRepository.existsByGroup_IdAndUser_Id(ownGroupId, kicked.getId())).willReturn(true);
+        groupService.inviteMembers(userId, ownGroupId, GroupInviteRequest.builder().userIds(List.of(kicked.getId())).build());
+        verify(groupBlockRepository).deleteBlock(ownGroupId, kicked.getId());
         verify(groupInvitationRepository).save(any(GroupInvitation.class));
     }
 
     @Test
-    @DisplayName("그룹 수정은 그룹장만 가능하다")
-    void updateGroup_NotOwner_Fail() {
-        UUID groupId = UUID.randomUUID();
+    @DisplayName("초대 - 최근에 거절한 친구는 일반 멤버가 다시 초대할 수 없다(409)")
+    void inviteMembers_RecentlyRejected() {
         User owner = User.builder().id(UUID.randomUUID()).build();
-        Group group = Group.builder().id(groupId).createdBy(owner).build();
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        UUID groupId = UUID.randomUUID();
+        stubInvitableGroup(groupId, owner);
+        User friend = User.builder().id(UUID.randomUUID()).build();
+        given(userRepository.findById(friend.getId())).willReturn(Optional.of(friend));
+        given(friendRepository.areFriends(userId, friend.getId())).willReturn(true);
+        given(groupInvitationRepository.existsByGroup_IdAndInvitee_IdAndStatusAndRespondedAtAfter(
+                eq(groupId), eq(friend.getId()), eq(InvitationStatus.REJECTED), any())).willReturn(true);
 
-        assertThatThrownBy(() -> groupService.updateGroup(userId, groupId,
-                GroupRequest.builder().name("new").build(), null, null))
-                .isInstanceOf(UnauthorizedAccessException.class);
+        assertThatThrownBy(() -> groupService.inviteMembers(userId, groupId,
+                GroupInviteRequest.builder().userIds(List.of(friend.getId())).build()))
+                .isInstanceOf(ConflictException.class);
+        verify(groupInvitationRepository, never()).save(any());
+    }
+
+    // ─── 회원 탈퇴 ────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("회원 탈퇴 - 방장인 모임은 가장 오래된 다른 멤버에게 넘기고, 초대·차단·멤버십을 지운다")
+    void onUserDeleting_TransfersOwnership() {
+        UUID groupId = UUID.randomUUID();
+        Group group = ownedGroup(groupId);
+        User next = User.builder().id(UUID.randomUUID()).build();
+        given(groupRepository.findAllByCreatedBy_Id(userId)).willReturn(List.of(group));
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.findAllByGroup_IdOrderByJoinedAtAsc(groupId)).willReturn(List.of(
+                GroupMember.builder().group(group).user(user).build(),
+                GroupMember.builder().group(group).user(next).build()));
+
+        groupService.onUserDeleting(new UserDeletingEvent(userId));
+
+        assertThat(group.getCreatedBy()).isEqualTo(next);
+        verify(groupRepository, never()).delete(any(Group.class));
+        verify(groupInvitationRepository).deleteAllInvolvingUser(userId);
+        verify(groupBlockRepository).deleteAllInvolvingUser(userId);
+        verify(groupMemberRepository).deleteAllByUserId(userId);
     }
 
     @Test
-    @DisplayName("그룹장은 그룹을 나갈 수 없다")
-    void leaveGroup_Owner_Fail() {
+    @DisplayName("회원 탈퇴 - 혼자인 모임은 삭제")
+    void onUserDeleting_DeletesSoloGroup() {
         UUID groupId = UUID.randomUUID();
-        Group group = Group.builder().id(groupId).createdBy(user).build();
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        Group group = ownedGroup(groupId);
+        given(groupRepository.findAllByCreatedBy_Id(userId)).willReturn(List.of(group));
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.findAllByGroup_IdOrderByJoinedAtAsc(groupId)).willReturn(List.of(
+                GroupMember.builder().group(group).user(user).build()));
 
-        assertThatThrownBy(() -> groupService.leaveGroup(userId, groupId))
-                .isInstanceOf(BadRequestException.class);
-    }
+        groupService.onUserDeleting(new UserDeletingEvent(userId));
 
-    @Test
-    @DisplayName("그룹 삭제는 그룹장만 가능하다")
-    void deleteGroup_NotOwner_Fail() {
-        UUID groupId = UUID.randomUUID();
-        User owner = User.builder().id(UUID.randomUUID()).build();
-        Group group = Group.builder().id(groupId).createdBy(owner).build();
-        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
-
-        assertThatThrownBy(() -> groupService.deleteGroup(userId, groupId))
-                .isInstanceOf(UnauthorizedAccessException.class);
-        verify(groupRepository, org.mockito.Mockito.never()).delete(any(Group.class));
+        verify(groupRepository).delete(group);
     }
 }

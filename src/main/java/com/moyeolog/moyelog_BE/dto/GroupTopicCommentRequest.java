@@ -1,6 +1,6 @@
 package com.moyeolog.moyelog_BE.dto;
 
-import jakarta.validation.constraints.Size;
+import com.moyeolog.moyelog_BE.validation.CodePointSize;
 import jakarta.validation.constraints.NotBlank;
 import lombok.*;
 
@@ -10,7 +10,7 @@ import lombok.*;
 @AllArgsConstructor
 @Builder
 public class GroupTopicCommentRequest {
-    @NotBlank(message = "댓글 내용은 필수입니다.")
-    @Size(max = 10000, message = "댓글은 10,000자를 초과할 수 없습니다.")
+    @NotBlank(message = "댓글 내용을 입력해 주세요.")
+    @CodePointSize(max = 10000, message = "댓글은 10,000자까지 쓸 수 있어요.")
     private String content;
 }

@@ -37,6 +37,12 @@ public class FriendController {
         return ResponseEntity.ok(friendService.getPendingRequests(UUID.fromString(userId)));
     }
 
+    /** 내가 보낸 대기 중 친구 요청 (id = 요청 ID, 취소는 DELETE /api/friends/{id}) */
+    @GetMapping("/requests/sent")
+    public ResponseEntity<List<FriendResponse>> getSentRequests(@AuthenticationPrincipal String userId) {
+        return ResponseEntity.ok(friendService.getSentRequests(UUID.fromString(userId)));
+    }
+
     @PutMapping("/accept/{requestId}")
     public ResponseEntity<Void> acceptRequest(
             @AuthenticationPrincipal String userId,

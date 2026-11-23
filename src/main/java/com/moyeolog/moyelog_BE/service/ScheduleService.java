@@ -6,8 +6,10 @@ import com.moyeolog.moyelog_BE.dto.ScheduleResponse;
 import com.moyeolog.moyelog_BE.entity.Memo;
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationType;
+import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
-import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.FriendRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
@@ -16,7 +18,10 @@ import com.moyeolog.moyelog_BE.repository.MemoRepository;
 import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
 import com.moyeolog.moyelog_BE.repository.ScheduleRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
+import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,7 +29,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -40,6 +44,7 @@ public class ScheduleService {
     private final GroupRepository groupRepository;
     private final FriendRepository friendRepository;
     private final MemoShareRepository memoShareRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
     public ScheduleResponse createSchedule(UUID userId, ScheduleRequest request) {
@@ -65,7 +70,8 @@ public class ScheduleService {
                 .build();
 
         Schedule savedSchedule = scheduleRepository.save(schedule);
-        return convertToResponse(savedSchedule);
+        notifyNewParticipants(savedSchedule, author, Set.of());
+        return convertToResponse(savedSchedule, userId);
     }
 
     @Transactional(readOnly = true)
@@ -85,7 +91,7 @@ public class ScheduleService {
         }
 
         return schedules.stream()
-                .map(this::convertToResponse)
+                .map(schedule -> convertToResponse(schedule, userId))
                 .collect(Collectors.toList());
     }
 
@@ -94,34 +100,40 @@ public class ScheduleService {
     public List<ScheduleResponse> getGroupSchedules(UUID userId, UUID groupId) {
         requireGroupMember(groupId, userId);
         return scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId).stream()
-                .map(this::convertToResponse)
+                .map(schedule -> convertToResponse(schedule, userId))
                 .collect(Collectors.toList());
     }
 
     @Transactional
     public void deleteSchedule(UUID userId, UUID scheduleId) {
-        Schedule schedule = findScheduleById(scheduleId);
+        // 동시 삭제는 행 잠금으로 줄 세운다: 먼저 지운 쪽만 204, 나머지는 404.
+        Schedule schedule = findScheduleForUpdate(scheduleId);
 
         if (!schedule.getAuthor().getId().equals(userId)) {
-            throw new UnauthorizedAccessException("일정 작성자만 삭제할 수 있습니다.");
+            throw new UnauthorizedAccessException("일정을 만든 사람만 삭제할 수 있어요.");
         }
 
         scheduleRepository.delete(schedule);
+        ConcurrentUpdates.flush(scheduleRepository::flush);
     }
 
     @Transactional
     public ScheduleResponse updateSchedule(UUID userId, UUID scheduleId, ScheduleRequest request) {
-        Schedule schedule = findScheduleById(scheduleId);
+        Schedule schedule = findScheduleForUpdate(scheduleId);
 
         if (!schedule.getAuthor().getId().equals(userId)) {
-            throw new UnauthorizedAccessException("일정 작성자만 수정할 수 있습니다.");
+            throw new UnauthorizedAccessException("일정을 만든 사람만 수정할 수 있어요.");
         }
 
         validateTimes(request);
 
         // groupId 를 그대로 반영한다 (null 이면 개인 일정). 그룹 일정으로 두거나 옮기려면 그 그룹의 멤버여야 한다.
         UUID newGroupId = request.getGroupId();
-        boolean groupChanged = !Objects.equals(schedule.getGroupId(), newGroupId);
+        UUID oldGroupId = schedule.getGroupId();
+        if (oldGroupId != null && !groupMemberRepository.existsByGroup_IdAndUser_Id(oldGroupId, userId)) {
+            // 모임 일정은 현재 모임 멤버만 고칠 수 있다 (나간·강퇴된 작성자도 불가). 삭제는 작성자에게 허용.
+            throw new UnauthorizedAccessException("모임을 나가서 이 모임 일정은 고칠 수 없어요. 삭제는 할 수 있어요.");
+        }
         if (newGroupId != null) {
             requireGroupMember(newGroupId, userId);
         }
@@ -130,9 +142,8 @@ public class ScheduleService {
         if (schedule.getTaggedMemos() != null) {
             schedule.getTaggedMemos().forEach(m -> existingMemoIds.add(m.getId()));
         }
-        // 그룹이 바뀌지 않았다면 기존 참여자는 그대로 둘 수 있다 (예: 이후에 친구 관계가 끊어진 경우).
         Set<UUID> existingParticipantIds = new HashSet<>();
-        if (!groupChanged && schedule.getParticipants() != null) {
+        if (schedule.getParticipants() != null) {
             schedule.getParticipants().forEach(p -> existingParticipantIds.add(p.getId()));
         }
 
@@ -149,37 +160,67 @@ public class ScheduleService {
                 taggedMemos,
                 participants
         );
+        ConcurrentUpdates.flush(scheduleRepository::flush);
 
-        return convertToResponse(schedule);
+        notifyNewParticipants(schedule, schedule.getAuthor(), existingParticipantIds);
+        return convertToResponse(schedule, userId);
+    }
+
+    /** 회원 탈퇴: 내가 만든 일정을 지우고, 다른 사람 일정의 참여자에서 뺀다. */
+    @EventListener
+    @Transactional
+    public void onUserDeleting(UserDeletingEvent event) {
+        UUID userId = event.userId();
+        for (Schedule schedule : scheduleRepository.findAllByParticipantId(userId)) {
+            schedule.getParticipants().removeIf(p -> p.getId().equals(userId));
+        }
+        scheduleRepository.deleteAll(scheduleRepository.findAllByAuthorId(userId));
+        scheduleRepository.flush();
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────
 
     private User findUserById(UUID userId) {
         return userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+                .orElseThrow(() -> new ItemNotFoundException("사용자를 찾을 수 없어요."));
     }
 
-    private Schedule findScheduleById(UUID scheduleId) {
-        return scheduleRepository.findById(scheduleId)
-                .orElseThrow(() -> new ResourceNotFoundException("일정", scheduleId));
+    private Schedule findScheduleForUpdate(UUID scheduleId) {
+        return scheduleRepository.findByIdForUpdate(scheduleId)
+                .orElseThrow(() -> new ItemNotFoundException("일정을 찾을 수 없어요. 삭제됐을 수 있어요."));
+    }
+
+    private void notifyNewParticipants(Schedule schedule, User author, Set<UUID> previousParticipantIds) {
+        if (schedule.getParticipants() == null) return;
+        String title = schedule.getTitle() == null ? "" : schedule.getTitle().trim();
+        if (CodePointSizeValidator.length(title) > 30) {
+            title = CodePointSizeValidator.truncate(title, 30) + "…";
+        }
+        String message = author.getNickname() + "님이 '" + title + "' 일정에 참여자로 추가했어요.";
+        for (User participant : schedule.getParticipants()) {
+            if (participant.getId().equals(author.getId()) || previousParticipantIds.contains(participant.getId())) {
+                continue;
+            }
+            eventPublisher.publishEvent(new NotificationEvent(participant.getId(), author.getId(),
+                    NotificationType.SCHEDULE_PARTICIPANT, message, "/schedule/" + schedule.getId()));
+        }
     }
 
     private void validateTimes(ScheduleRequest request) {
         if (request.getStartTime() == null || request.getEndTime() == null) {
-            throw new BadRequestException("시작 시간과 종료 시간은 필수입니다.");
+            throw new BadRequestException("시작 시각과 종료 시각을 입력해 주세요.");
         }
         if (request.getEndTime().isBefore(request.getStartTime())) {
-            throw new BadRequestException("종료 시간은 시작 시간보다 빠를 수 없습니다.");
+            throw new BadRequestException("종료 시각은 시작 시각보다 빠를 수 없어요.");
         }
     }
 
     private void requireGroupMember(UUID groupId, UUID userId) {
         if (!groupRepository.existsById(groupId)) {
-            throw new ResourceNotFoundException("그룹", groupId);
+            throw new ItemNotFoundException("모임을 찾을 수 없어요.");
         }
         if (!groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)) {
-            throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
+            throw new UnauthorizedAccessException("모임 멤버만 할 수 있어요.");
         }
     }
 
@@ -187,7 +228,8 @@ public class ScheduleService {
      * 참여자 검증.
      * - 그룹 일정: 참여자는 모두 그 그룹의 멤버여야 합니다.
      * - 개인 일정: 참여자는 작성자 본인이거나 작성자의 (수락된) 친구여야 합니다.
-     * allowedExisting 에 들어 있는 사용자는 검증 없이 유지할 수 있습니다.
+     * 이미 참여자였던 사람이 지금 규칙에 맞지 않으면(친구를 끊음, 모임을 나감) 조용히 빼고,
+     * 새로 추가하려는 사람이 맞지 않으면 400 입니다.
      */
     private List<User> resolveParticipants(List<UUID> participantIds, UUID authorId, UUID groupId, Set<UUID> allowedExisting) {
         List<User> participants = new ArrayList<>();
@@ -197,22 +239,26 @@ public class ScheduleService {
         Set<UUID> ids = new LinkedHashSet<>(participantIds);
         ids.remove(null);
 
+        Set<UUID> accepted = new LinkedHashSet<>();
         for (UUID participantId : ids) {
-            if (allowedExisting.contains(participantId)) continue;
             boolean allowed;
             if (groupId != null) {
                 allowed = groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, participantId);
             } else {
                 allowed = participantId.equals(authorId) || friendRepository.areFriends(authorId, participantId);
             }
-            if (!allowed) {
+            if (allowed) {
+                accepted.add(participantId);
+            } else if (!allowedExisting.contains(participantId)) {
                 throw new BadRequestException(groupId != null
-                        ? "그룹 일정의 참여자는 그룹 멤버여야 합니다."
-                        : "개인 일정의 참여자는 친구여야 합니다.");
+                        ? "모임 일정의 참여자는 모임 멤버여야 해요."
+                        : "개인 일정의 참여자는 친구여야 해요.");
             }
         }
 
-        participants.addAll(userRepository.findAllById(ids));
+        if (!accepted.isEmpty()) {
+            participants.addAll(userRepository.findAllById(accepted));
+        }
         return participants;
     }
 
@@ -226,7 +272,7 @@ public class ScheduleService {
         ids.remove(null);
         for (Memo memo : memoRepository.findAllById(ids)) {
             if (!alreadyTagged.contains(memo.getId()) && !canReadMemo(memo, userId)) {
-                throw new UnauthorizedAccessException("접근 권한이 없는 메모는 태그할 수 없습니다.");
+                throw new UnauthorizedAccessException("볼 수 없는 메모는 연결할 수 없어요.");
             }
             result.add(memo);
         }
@@ -240,10 +286,12 @@ public class ScheduleService {
                 && groupMemberRepository.existsByGroup_IdAndUser_Id(memo.getGroupId(), userId);
     }
 
-    private ScheduleResponse convertToResponse(Schedule schedule) {
+    /** 연결된 메모는 요청한 사용자가 열 수 있는 것만 담는다 (비공개 메모 제목 노출 방지). */
+    private ScheduleResponse convertToResponse(Schedule schedule, UUID viewerId) {
         List<MemoResponse> memoResponses = new ArrayList<>();
         if (schedule.getTaggedMemos() != null) {
             memoResponses = schedule.getTaggedMemos().stream()
+                .filter(m -> canReadMemo(m, viewerId))
                 .map(m -> MemoResponse.builder()
                     .id(m.getId())
                     .title(m.getTitle())

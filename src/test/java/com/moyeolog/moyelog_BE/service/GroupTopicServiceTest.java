@@ -35,6 +35,8 @@ class GroupTopicServiceTest {
     @Mock private GroupMemberRepository groupMemberRepository;
     @Mock private UserRepository userRepository;
     @Mock private GeminiService geminiService;
+    @Mock private GroupImageService groupImageService;
+    @Mock private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private GroupTopicService groupTopicService;
 
@@ -130,5 +132,159 @@ class GroupTopicServiceTest {
 
         assertThatThrownBy(() -> groupTopicService.createTopic(userId, groupId, request))
                 .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
+    }
+
+    // ─── 2차 QA: 멤버십·댓글·이미지·동시 삭제 ─────────────────────
+
+    private GroupTopic ownTopic() {
+        return GroupTopic.builder().id(UUID.randomUUID()).title("t").content("c").author(user).group(group).build();
+    }
+
+    private com.moyeolog.moyelog_BE.entity.GroupTopicComment ownComment(GroupTopic topic) {
+        return com.moyeolog.moyelog_BE.entity.GroupTopicComment.builder()
+                .id(UUID.randomUUID()).topic(topic).author(user).content("댓글").build();
+    }
+
+    @Test
+    @DisplayName("나간·내보내진 작성자는 자기 토픽·댓글을 수정할 수 없다(403)")
+    void update_NotMember_Forbidden() {
+        GroupTopic topic = ownTopic();
+        var comment = ownComment(topic);
+        given(groupTopicRepository.findById(topic.getId())).willReturn(Optional.of(topic));
+        given(groupTopicCommentRepository.findById(comment.getId())).willReturn(Optional.of(comment));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
+
+        assertThatThrownBy(() -> groupTopicService.updateTopic(userId, topic.getId(),
+                GroupTopicRequest.builder().title("강퇴 후 수정").content("c").build()))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        assertThatThrownBy(() -> groupTopicService.updateComment(userId, comment.getId(),
+                new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest("수정")))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        assertThat(topic.getTitle()).isEqualTo("t");
+        assertThat(comment.getContent()).isEqualTo("댓글");
+    }
+
+    @Test
+    @DisplayName("자기 토픽·댓글 삭제는 모임을 나간 뒤에도 가능, 이미 지워졌으면(동시 삭제) 404")
+    void delete_OwnPost_AndConcurrent404() {
+        GroupTopic topic = ownTopic();
+        var comment = ownComment(topic);
+        given(groupTopicRepository.findByIdForUpdate(topic.getId())).willReturn(Optional.of(topic), Optional.empty());
+        given(groupTopicCommentRepository.findByIdForUpdate(comment.getId())).willReturn(Optional.of(comment), Optional.empty());
+
+        groupTopicService.deleteComment(userId, comment.getId());
+        groupTopicService.deleteTopic(userId, topic.getId());
+        verify(groupTopicCommentRepository).delete(comment);
+        verify(groupTopicRepository).delete(topic);
+
+        assertThatThrownBy(() -> groupTopicService.deleteTopic(userId, topic.getId()))
+                .isInstanceOfSatisfying(com.moyeolog.moyelog_BE.exception.MoyeologException.class,
+                        e -> assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.NOT_FOUND));
+        assertThatThrownBy(() -> groupTopicService.deleteComment(userId, comment.getId()))
+                .isInstanceOfSatisfying(com.moyeolog.moyelog_BE.exception.MoyeologException.class,
+                        e -> assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("보이지 않는 문자만 있는 댓글은 400")
+    void createComment_Invisible_Fail() {
+        GroupTopic topic = ownTopic();
+        given(groupTopicRepository.findById(topic.getId())).willReturn(Optional.of(topic));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+
+        for (String invisible : new String[]{"\u200b", "\u200b \ufeff", "\u2060", "\u3164"}) {
+            assertThatThrownBy(() -> groupTopicService.createComment(userId, topic.getId(),
+                    new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest(invisible)))
+                    .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("다른 사람 토픽에 댓글을 달면 토픽 작성자에게 TOPIC_COMMENT 알림, 내 토픽이면 알림 없음")
+    void createComment_Notification() {
+        User topicAuthor = User.builder().id(UUID.randomUUID()).nickname("작성자").build();
+        GroupTopic topic = GroupTopic.builder().id(UUID.randomUUID()).title("주제").content("c").author(topicAuthor).group(group).build();
+        given(groupTopicRepository.findById(topic.getId())).willReturn(Optional.of(topic));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        given(groupTopicCommentRepository.save(any())).willAnswer(inv -> inv.getArgument(0));
+
+        groupTopicService.createComment(userId, topic.getId(), new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest("좋아요"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(com.moyeolog.moyelog_BE.event.NotificationEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().type()).isEqualTo(com.moyeolog.moyelog_BE.event.NotificationType.TOPIC_COMMENT);
+        assertThat(captor.getValue().recipientId()).isEqualTo(topicAuthor.getId());
+        assertThat(captor.getValue().link()).isEqualTo("/groups/" + groupId + "?topic=" + topic.getId());
+
+        GroupTopic mine = ownTopic();
+        given(groupTopicRepository.findById(mine.getId())).willReturn(Optional.of(mine));
+        groupTopicService.createComment(userId, mine.getId(), new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest("셀프"));
+        verify(eventPublisher, org.mockito.Mockito.times(1)).publishEvent(any(Object.class));
+    }
+
+    @Test
+    @DisplayName("댓글 수정 응답의 updatedAt 은 수정 시각, 작성자 customId 포함")
+    void updateComment_UpdatedAt() {
+        GroupTopic topic = ownTopic();
+        var comment = com.moyeolog.moyelog_BE.entity.GroupTopicComment.builder()
+                .id(UUID.randomUUID()).topic(topic).author(user).content("old")
+                .createdAt(java.time.LocalDateTime.now().minusMinutes(5))
+                .updatedAt(java.time.LocalDateTime.now().minusMinutes(5)).build();
+        given(groupTopicCommentRepository.findById(comment.getId())).willReturn(Optional.of(comment));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+
+        var response = groupTopicService.updateComment(userId, comment.getId(),
+                new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest("new"));
+        assertThat(response.getUpdatedAt()).isAfter(response.getCreatedAt());
+        assertThat(response.getContent()).isEqualTo("new");
+    }
+
+    @Test
+    @DisplayName("토픽 이미지: data URL 은 파일로 저장해 /uploads 경로, 남의(또는 없는) /uploads 경로는 400")
+    void createTopic_Image() {
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(groupTopicRepository.save(any(GroupTopic.class))).willAnswer(inv -> inv.getArgument(0));
+        String dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+        given(groupImageService.storeDataUrl(dataUrl)).willReturn("/uploads/new.png");
+
+        GroupTopicResponse response = groupTopicService.createTopic(userId, groupId,
+                GroupTopicRequest.builder().title("t").content("c").imageUrl(dataUrl).build());
+        assertThat(response.getImageUrl()).isEqualTo("/uploads/new.png");
+
+        assertThatThrownBy(() -> groupTopicService.createTopic(userId, groupId,
+                GroupTopicRequest.builder().title("t").content("c").imageUrl("/uploads/someone-else.jpg").build()))
+                .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
+        verify(groupImageService, org.mockito.Mockito.never()).copyUpload(any());
+    }
+
+    @Test
+    @DisplayName("토픽 이미지: 내가 쓴 토픽에 있던 /uploads 이미지는 새 파일로 복사해서 쓴다")
+    void createTopic_OwnUpload_Copied() {
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(groupTopicRepository.save(any(GroupTopic.class))).willAnswer(inv -> inv.getArgument(0));
+        given(groupTopicRepository.existsByAuthor_IdAndImageUrl(userId, "/uploads/mine.png")).willReturn(true);
+        given(groupImageService.copyUpload("/uploads/mine.png")).willReturn(Optional.of("/uploads/copy.png"));
+
+        GroupTopicResponse response = groupTopicService.createTopic(userId, groupId,
+                GroupTopicRequest.builder().title("t").content("c").imageUrl("/uploads/mine.png").build());
+        assertThat(response.getImageUrl()).isEqualTo("/uploads/copy.png");
+    }
+
+    @Test
+    @DisplayName("목록 응답에는 예전 base64 이미지를 담지 않는다")
+    void list_HidesDataUrl() {
+        GroupTopic legacy = GroupTopic.builder().id(UUID.randomUUID()).title("t").content("c").author(user).group(group)
+                .imageUrl("data:image/png;base64,iVBORw0KGgo=").build();
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(groupTopicRepository.findAllByGroupOrderByCreatedAtDesc(group)).willReturn(java.util.List.of(legacy));
+
+        assertThat(groupTopicService.getTopicsByGroup(userId, groupId).get(0).getImageUrl()).isNull();
     }
 }

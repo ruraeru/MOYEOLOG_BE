@@ -4,6 +4,7 @@ import com.moyeolog.moyelog_BE.entity.RefreshToken;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -24,4 +25,15 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     boolean existsByTokenIn(Collection<String> tokens);
 
     void deleteAllByUserIdAndExpiryDateBefore(UUID userId, LocalDateTime dateTime);
+
+    /** 로그아웃: 현재 토큰이거나 방금 교체된 직전 토큰인 행 */
+    @Query("SELECT r FROM RefreshToken r WHERE r.token IN :tokens OR r.previousToken = :hash")
+    List<RefreshToken> findAllForLogout(@Param("tokens") Collection<String> tokens, @Param("hash") String hash);
+
+    @Query("SELECT r FROM RefreshToken r WHERE r.userId = :userId AND r.expiryDate > :now ORDER BY r.id DESC")
+    List<RefreshToken> findActiveByUserId(@Param("userId") UUID userId, @Param("now") LocalDateTime now);
+
+    @Modifying
+    @Query("DELETE FROM RefreshToken r WHERE r.userId = :userId")
+    int deleteAllByUserId(@Param("userId") UUID userId);
 }

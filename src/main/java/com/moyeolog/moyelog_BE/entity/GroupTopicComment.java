@@ -48,5 +48,7 @@ public class GroupTopicComment {
 
     public void update(String content) {
         this.content = content;
+        // 응답에 수정 시각이 바로 반영되도록 (@PreUpdate 는 flush 때 돈다)
+        this.updatedAt = LocalDateTime.now();
     }
 }

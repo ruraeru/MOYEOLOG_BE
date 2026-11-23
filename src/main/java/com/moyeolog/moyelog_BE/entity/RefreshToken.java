@@ -49,6 +49,24 @@ public class RefreshToken {
     @Column(name = "expiry_date", nullable = false)
     private LocalDateTime expiryDate;
 
+    /** 로그인(세션) 시각. 이 컬럼이 생기기 전에 만든 행은 NULL. */
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
+
+    /** 마지막으로 이 세션의 토큰을 갱신한 시각 */
+    @Column(name = "last_used_at")
+    private LocalDateTime lastUsedAt;
+
+    @PrePersist
+    protected void onCreate() {
+        if (createdAt == null) {
+            createdAt = LocalDateTime.now();
+        }
+        if (lastUsedAt == null) {
+            lastUsedAt = createdAt;
+        }
+    }
+
     /**
      * @param presentedTokenHash 방금 제시된(이제 직전이 되는) 토큰의 SHA-256 해시.
      *                           예전 행은 token 컬럼에 원문이 들어 있으므로 token 값을 그대로 옮기지 않는다.
@@ -59,5 +77,6 @@ public class RefreshToken {
         this.currentToken = newToken;
         this.expiryDate = expiryDate;
         this.rotatedAt = now;
+        this.lastUsedAt = now;
     }
 }

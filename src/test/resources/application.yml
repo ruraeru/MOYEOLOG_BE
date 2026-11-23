@@ -29,3 +29,11 @@ gemini:
 
 file:
   upload-dir: build/test-uploads
+
+cors:
+  allowed-origins: https://moyeolog.test
+
+# 테스트에서는 실제 LLM 서버를 부르지 않는다 (닫힌 포트 → 즉시 연결 실패). Gemini 대체 키도 비워 둔다(위 gemini.api.key).
+llm:
+  base-url: http://127.0.0.1:9
+  api-key: ""

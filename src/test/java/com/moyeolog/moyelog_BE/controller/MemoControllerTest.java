@@ -75,7 +75,7 @@ public class MemoControllerTest {
     @Test
     @DisplayName("인증된 사용자는 메모 목록을 조회할 수 있다")
     void getMemosWithAuth() throws Exception {
-        given(memoService.getMyMemos(any(UUID.class))).willReturn(new ArrayList<>());
+        given(memoService.getMyMemos(any(UUID.class), any())).willReturn(new ArrayList<>());
 
         mockMvc.perform(get("/api/memos")
                         .principal(() -> "ac61d5c9-fc9d-4922-9afc-b9aadfb09ee8"))

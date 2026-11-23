@@ -35,6 +35,12 @@ public class FileService {
 
     private static final int HEADER_LENGTH = 12;
 
+    private static final Pattern DATA_URL_PREFIX =
+            Pattern.compile("^data:image/(png|jpeg|jpg|gif|webp);base64,", Pattern.CASE_INSENSITIVE);
+
+    /** data URL 의 base64 부분 최대 길이 (약 15MB 이미지) */
+    private static final int MAX_DATA_URL_BASE64_LENGTH = 20 * 1024 * 1024;
+
     /** 파일 내용(매직 바이트)으로 판별한 이미지 종류 */
     public enum ImageType {
         JPEG("image/jpeg", ".jpg"),
@@ -72,13 +78,13 @@ public class FileService {
      */
     public String storeFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new BadRequestException("업로드할 파일이 비어 있습니다.");
+            throw new BadRequestException("올릴 파일이 비어 있어요.");
         }
 
         try (InputStream in = file.getInputStream()) {
             byte[] header = in.readNBytes(HEADER_LENGTH);
             ImageType type = detectImageType(header)
-                    .orElseThrow(() -> new BadRequestException("JPEG, PNG, GIF, WEBP 이미지만 업로드할 수 있습니다."));
+                    .orElseThrow(() -> new BadRequestException("JPEG, PNG, GIF, WEBP 이미지만 올릴 수 있어요."));
 
             Path root = uploadRoot();
             Files.createDirectories(root);
@@ -177,6 +183,61 @@ public class FileService {
         } catch (IOException e) {
             log.warn("Could not read uploaded file: {}", e.getClass().getSimpleName());
             return Optional.empty();
+        }
+    }
+
+    /**
+     * AI 분석용 이미지 읽기: "/uploads/<파일 이름>" 이면 업로드 파일을, "data:image/...;base64," 이면 그 내용을 읽는다.
+     * 어느 쪽이든 매직 바이트가 JPEG/PNG/GIF/WEBP 일 때만 돌려준다 (MIME 도 내용으로 판별한 값).
+     */
+    public Optional<ImageData> loadImageForAnalysis(String imageUrl) {
+        if (imageUrl != null && imageUrl.regionMatches(true, 0, "data:", 0, 5)) {
+            return decodeImageDataUrl(imageUrl)
+                    .flatMap(bytes -> detectImageType(bytes)
+                            .map(type -> new ImageData(type.getMimeType(), Base64.getEncoder().encodeToString(bytes))));
+        }
+        return loadImage(imageUrl);
+    }
+
+    /**
+     * "data:image/(png|jpeg|gif|webp);base64,..." 를 바이트로 푼다. 형식이 다르거나, base64 가 아니거나,
+     * 너무 크거나, 내용이 이미지(매직 바이트)가 아니면 empty 입니다.
+     */
+    public Optional<byte[]> decodeImageDataUrl(String dataUrl) {
+        if (dataUrl == null) {
+            return Optional.empty();
+        }
+        java.util.regex.Matcher m = DATA_URL_PREFIX.matcher(dataUrl);
+        if (!m.lookingAt()) {
+            return Optional.empty();
+        }
+        String payload = dataUrl.substring(m.end());
+        if (payload.isEmpty() || payload.length() > MAX_DATA_URL_BASE64_LENGTH) {
+            return Optional.empty();
+        }
+        try {
+            byte[] bytes = Base64.getDecoder().decode(payload.replaceAll("\\s", ""));
+            return detectImageType(bytes).isPresent() ? Optional.of(bytes) : Optional.empty();
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 이미지 바이트를 업로드 디렉터리에 저장하고 "/uploads/<파일 이름>" 을 돌려줍니다 (data URL 토픽 이미지 변환용).
+     * 매직 바이트가 JPEG/PNG/GIF/WEBP 가 아니면 400.
+     */
+    public String storeImage(byte[] content) {
+        ImageType type = detectImageType(content)
+                .orElseThrow(() -> new BadRequestException("JPEG, PNG, GIF, WEBP 이미지만 업로드할 수 있어요."));
+        try {
+            Path root = uploadRoot();
+            Files.createDirectories(root);
+            String fileName = UUID.randomUUID() + type.getExtension();
+            Files.write(root.resolve(fileName), content, StandardOpenOption.CREATE_NEW);
+            return UPLOAD_URL_PREFIX + fileName;
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not store file", e);
         }
     }
 

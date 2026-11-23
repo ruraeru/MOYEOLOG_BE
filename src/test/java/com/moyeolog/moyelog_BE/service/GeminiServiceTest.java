@@ -29,7 +29,7 @@ class GeminiServiceTest {
         RestTemplate restTemplate = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
         FileService fileService = mock(FileService.class);
-        when(fileService.loadImage(any())).thenReturn(Optional.empty());
+        when(fileService.loadImageForAnalysis(any())).thenReturn(Optional.empty());
         GeminiService service = new GeminiService(restTemplate, fileService, new ObjectMapper());
         ReflectionTestUtils.setField(service, "llmBaseUrl", "https://ai.example/");
         ReflectionTestUtils.setField(service, "llmModel", "qwen3.5:9b");
@@ -57,7 +57,7 @@ class GeminiServiceTest {
         RestTemplate restTemplate = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
         FileService fileService = mock(FileService.class);
-        when(fileService.loadImage(any())).thenReturn(Optional.empty());
+        when(fileService.loadImageForAnalysis(any())).thenReturn(Optional.empty());
         GeminiService service = new GeminiService(restTemplate, fileService, new ObjectMapper());
         ReflectionTestUtils.setField(service, "llmBaseUrl", "https://ai.example");
         ReflectionTestUtils.setField(service, "llmModel", "qwen3.5:9b");
@@ -75,5 +75,67 @@ class GeminiServiceTest {
 
         server.verify();
         assertThat(result.get("summary")).isEqualTo("요약");
+    }
+
+    private static String ollamaReply(String ocrText, String summary) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        String inner = mapper.writeValueAsString(Map.of("ocrText", ocrText, "summary", summary, "keywords", List.of("회의")));
+        return mapper.writeValueAsString(Map.of("message", Map.of("content", inner), "done", true));
+    }
+
+    private static GeminiService ollamaOnly(RestTemplate restTemplate, FileService fileService) {
+        GeminiService service = new GeminiService(restTemplate, fileService, new ObjectMapper());
+        ReflectionTestUtils.setField(service, "llmBaseUrl", "https://ai.example");
+        ReflectionTestUtils.setField(service, "llmModel", "qwen3.5:9b");
+        ReflectionTestUtils.setField(service, "llmApiKey", "");
+        ReflectionTestUtils.setField(service, "apiKey", "");
+        return service;
+    }
+
+    @Test
+    void topicDataUrlImageIsSentToModel() throws Exception {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        GeminiService service = ollamaOnly(restTemplate, new FileService());
+
+        byte[] png = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4};
+        String b64 = java.util.Base64.getEncoder().encodeToString(png);
+        server.expect(requestTo("https://ai.example/api/chat"))
+                .andExpect(jsonPath("$.messages[0].images[0]").value(b64))
+                .andExpect(jsonPath("$.messages[0].content").value(org.hamcrest.Matchers.containsString("INSIDE THE ATTACHED IMAGE")))
+                .andRespond(withSuccess(ollamaReply("3주차 회의 결과\n발표일 12월 3일", "요약").getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        MediaType.APPLICATION_JSON));
+
+        Map<String, Object> result = service.analyze("화이트보드 사진 올려요", "data:image/png;base64," + b64, "t1");
+
+        server.verify();
+        assertThat(result.get("ocrText")).isEqualTo("3주차 회의 결과\n발표일 12월 3일");
+    }
+
+    @Test
+    void ocrTextIsEmptyWithoutImageEvenIfModelCopiesText() throws Exception {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        GeminiService service = ollamaOnly(restTemplate, new FileService());
+
+        server.expect(requestTo("https://ai.example/api/chat"))
+                .andExpect(jsonPath("$.messages[0].images").doesNotExist())
+                .andExpect(jsonPath("$.messages[0].content").value(org.hamcrest.Matchers.containsString("MUST be an empty string")))
+                .andRespond(withSuccess(ollamaReply("지난 회의 화이트보드 사진 올려요", "회식이 있다.학교 앞이다.평점 3.5점이다...좋다.")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8), MediaType.APPLICATION_JSON));
+
+        Map<String, Object> result = service.analyze("지난 회의 화이트보드 사진 올려요", null, "t2");
+
+        server.verify();
+        assertThat(result.get("ocrText")).isEqualTo("");
+        // 문장 사이 공백 보정 (소수점·말줄임표는 그대로)
+        assertThat(result.get("summary")).isEqualTo("회식이 있다. 학교 앞이다. 평점 3.5점이다... 좋다.");
+    }
+
+    @Test
+    void spaceSentencesKeepsExistingSpacingAndNewlines() {
+        assertThat(GeminiService.spaceSentences("첫 문장이다.\n둘째 문장이다. 셋째다!")).isEqualTo("첫 문장이다.\n둘째 문장이다. 셋째다!");
+        assertThat(GeminiService.spaceSentences("정말?네.")).isEqualTo("정말? 네.");
+        assertThat(GeminiService.spaceSentences("")).isEqualTo("");
     }
 }
