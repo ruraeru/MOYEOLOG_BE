@@ -1,22 +1,25 @@
 package com.moyeolog.moyelog_BE.dto;
 
+import com.moyeolog.moyelog_BE.validation.CodePointSize;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
 import lombok.*;
 
+/**
+ * 모임 만들기·수정 요청.
+ * 이름은 trim 후 1~50자(코드 포인트)로 GroupService 에서 검사한다.
+ * colorTheme 은 indigo, blue, emerald, orange, rose, amber, purple 중 하나(없으면 indigo).
+ */
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
 public class GroupRequest {
-    @NotBlank(message = "그룹 이름은 필수입니다.")
-    @Size(max = 50, message = "그룹 이름은 50자를 초과할 수 없습니다.")
+    @NotBlank(message = "모임 이름을 입력해 주세요.")
     private String name;
-    
-    @Size(max = 255, message = "설명은 255자를 초과할 수 없습니다.")
+
+    @CodePointSize(max = 255, message = "모임 소개는 255자까지 쓸 수 있어요.")
     private String description;
-    
-    @Size(max = 100, message = "색상 테마 값이 너무 깁니다.")
+
     private String colorTheme;
 }

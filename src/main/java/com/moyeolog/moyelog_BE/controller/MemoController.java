@@ -41,8 +41,16 @@ public class MemoController {
     }
 
     @GetMapping
-    public ResponseEntity<List<MemoResponse>> getMyMemos(@AuthenticationPrincipal String userId) {
-        return ResponseEntity.ok(memoService.getMyMemos(UUID.fromString(userId)));
+    public ResponseEntity<List<MemoResponse>> getMyMemos(
+            @AuthenticationPrincipal String userId,
+            @RequestParam(value = "q", required = false) String q) {
+        return ResponseEntity.ok(memoService.getMyMemos(UUID.fromString(userId), q));
+    }
+
+    /** 내가 즐겨찾기했고 지금 볼 수 있는 모든 메모 (내 메모·공유받은 메모·모임 메모) */
+    @GetMapping("/favorites")
+    public ResponseEntity<List<MemoResponse>> getFavoriteMemos(@AuthenticationPrincipal String userId) {
+        return ResponseEntity.ok(memoService.getFavoriteMemos(UUID.fromString(userId)));
     }
 
     @GetMapping("/shared")

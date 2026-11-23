@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.service;
 
 import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.entity.Group;
+import com.moyeolog.moyelog_BE.entity.GroupBlock;
 import com.moyeolog.moyelog_BE.entity.GroupInvitation;
 import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.GroupTopic;
@@ -9,24 +10,34 @@ import com.moyeolog.moyelog_BE.entity.Memo;
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.enums.InvitationStatus;
+import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationType;
+import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.repository.*;
-import com.moyeolog.moyelog_BE.exception.BadRequestException;
-import com.moyeolog.moyelog_BE.exception.ConflictException;
-import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
-import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
+import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import static com.moyeolog.moyelog_BE.service.GroupErrors.*;
 
 @Service
 @RequiredArgsConstructor
@@ -40,6 +51,17 @@ public class GroupService {
     private final ScheduleRepository scheduleRepository;
     private final GroupTopicCommentRepository groupTopicCommentRepository;
     private final FileService fileService;
+    private final GroupBlockRepository groupBlockRepository;
+    private final FriendRepository friendRepository;
+    private final GroupImageService groupImageService;
+    private final ApplicationEventPublisher eventPublisher;
+
+    /** 프론트 lib/constants.ts THEME_COLORS 의 키 */
+    public static final Set<String> COLOR_THEMES = Set.of("indigo", "blue", "emerald", "orange", "rose", "amber", "purple");
+    public static final String DEFAULT_COLOR_THEME = "indigo";
+    static final int NAME_MAX = 50;
+    /** 거절한 사람에게 일반 멤버가 다시 초대할 수 있기까지 기다리는 기간 */
+    static final int REINVITE_COOLDOWN_DAYS = 7;
 
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     private static final int CODE_LENGTH = 6;
@@ -49,26 +71,47 @@ public class GroupService {
     public GroupResponse createGroup(UUID userId, GroupRequest request) {
         User creator = findUserById(userId);
 
-        String inviteCode = generateUniqueInviteCode();
-
         Group group = Group.builder()
-                .name(request.getName())
+                .name(normalizeName(request.getName()))
                 .description(request.getDescription())
-                .colorTheme(request.getColorTheme())
-                .inviteCode(inviteCode)
+                .colorTheme(normalizeColorTheme(request.getColorTheme(), DEFAULT_COLOR_THEME))
+                .inviteCode(generateUniqueInviteCode())
                 .createdBy(creator)
                 .build();
 
         Group savedGroup = groupRepository.save(group);
 
         // 생성자를 첫 번째 멤버로 추가
-        GroupMember member = GroupMember.builder()
+        groupMemberRepository.save(GroupMember.builder()
                 .group(savedGroup)
                 .user(creator)
-                .build();
-        groupMemberRepository.save(member);
+                .build());
 
-        return convertToResponse(savedGroup);
+        return convertToResponse(savedGroup, userId);
+    }
+
+    /** 이름: trim 후 1~50자(코드 포인트), 보이지 않는 문자만으로 된 이름은 거절 */
+    static String normalizeName(String name) {
+        if (name == null || isVisuallyBlank(name)) {
+            throw badRequest("모임 이름을 입력해 주세요.");
+        }
+        String trimmed = name.strip();
+        if (CodePointSizeValidator.length(trimmed) > NAME_MAX) {
+            throw badRequest("모임 이름은 50자까지 쓸 수 있어요.");
+        }
+        return trimmed;
+    }
+
+    /** colorTheme: 정해진 키만. 비어 있으면 fallback */
+    static String normalizeColorTheme(String colorTheme, String fallback) {
+        if (colorTheme == null || colorTheme.isBlank()) {
+            return fallback;
+        }
+        String value = colorTheme.trim();
+        if (!COLOR_THEMES.contains(value)) {
+            throw badRequest("모임 색을 다시 골라 주세요.");
+        }
+        return value;
     }
 
     private String generateUniqueInviteCode() {
@@ -83,36 +126,71 @@ public class GroupService {
         return code;
     }
 
-    @Transactional
-    public void joinGroupByCode(UUID userId, String inviteCode) {
+    private Group findGroupByCode(String inviteCode) {
         if (inviteCode == null || inviteCode.isBlank()) {
-            throw new BadRequestException("초대 코드를 입력해주세요.");
+            throw notFound(INVALID_INVITE_CODE);
         }
-        Group group = groupRepository.findByInviteCode(inviteCode.trim().toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("초대 코드", inviteCode.trim()));
+        String code = inviteCode.trim().toUpperCase();
+        if (code.length() != CODE_LENGTH) {
+            throw notFound(INVALID_INVITE_CODE);
+        }
+        return groupRepository.findByInviteCode(code).orElseThrow(() -> notFound(INVALID_INVITE_CODE));
+    }
+
+    /** 초대 코드로 모임 정보 미리 보기 (가입 전 확인 화면용) */
+    @Transactional(readOnly = true)
+    public GroupPreviewResponse previewByCode(UUID userId, String inviteCode) {
+        Group group = findGroupByCode(inviteCode);
+        return GroupPreviewResponse.builder()
+                .id(group.getId())
+                .name(group.getName())
+                .description(group.getDescription())
+                .colorTheme(group.getColorTheme())
+                .profileImage(group.getProfileImage())
+                .memberCount(distinctMembers(group).size())
+                .ownerNickname(group.getCreatedBy().getNickname())
+                .alreadyMember(isMember(group.getId(), userId))
+                .blocked(groupBlockRepository.existsByGroup_IdAndUser_Id(group.getId(), userId))
+                .build();
+    }
+
+    @Transactional
+    public GroupJoinResponse joinGroupByCode(UUID userId, String inviteCode) {
+        if (inviteCode == null || inviteCode.isBlank()) {
+            throw badRequest("초대 코드를 입력해 주세요.");
+        }
+        Group found = findGroupByCode(inviteCode);
+        // 같은 모임의 가입·초대·내보내기를 한 줄로 세운다 (동시 가입 시 멤버십 1개)
+        Group group = lockGroup(found.getId());
         User user = findUserById(userId);
 
         if (isMember(group.getId(), userId)) {
-            throw new ConflictException("이미 가입한 그룹입니다.");
+            throw new AlreadyMemberException(group.getId());
+        }
+        if (groupBlockRepository.existsByGroup_IdAndUser_Id(group.getId(), userId)) {
+            throw forbidden(BLOCKED);
         }
 
         groupMemberRepository.save(GroupMember.builder()
                 .group(group)
                 .user(user)
                 .build());
+        // 먼저 받아 둔 이 모임 대기 초대는 정리
+        groupInvitationRepository.deletePendingForInvitee(group.getId(), userId);
+        return GroupJoinResponse.builder().groupId(group.getId()).build();
     }
 
     @Transactional(readOnly = true)
     public List<GroupResponse> getMyGroups(UUID userId) {
         User user = findUserById(userId);
 
-        // 과거 데이터에 중복 멤버십이 있어도 그룹이 두 번 나오지 않도록 한다.
+        // 과거 데이터에 중복 멤버십이 있어도 모임이 두 번 나오지 않도록 한다.
         Map<UUID, Group> groups = new LinkedHashMap<>();
         for (GroupMember membership : groupMemberRepository.findByUser(user)) {
             groups.putIfAbsent(membership.getGroup().getId(), membership.getGroup());
         }
         return groups.values().stream()
-                .map(this::convertToResponse)
+                .map(group -> convertToResponse(group, userId))
                 .collect(Collectors.toList());
     }
 
@@ -120,40 +198,42 @@ public class GroupService {
     public GroupResponse getGroup(UUID userId, UUID groupId) {
         Group group = findGroupById(groupId);
         requireMember(groupId, userId);
-        return convertToResponse(group);
+        return convertToResponse(group, userId);
     }
 
     @Transactional(readOnly = true)
     public List<GroupActivityResponse> getRecentActivities(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+        User user = findUserById(userId);
 
         List<UUID> groupIds = groupMemberRepository.findByUser(user).stream()
                 .map(m -> m.getGroup().getId())
+                .distinct()
                 .collect(Collectors.toList());
 
         if (groupIds.isEmpty()) return new ArrayList<>();
 
-        // 1. 최근 메모 가져오기
+        Map<UUID, String> groupNames = new LinkedHashMap<>();
+        for (Group group : groupRepository.findAllById(groupIds)) {
+            groupNames.put(group.getId(), group.getName());
+        }
+
+        // 1. 최근 메모
         List<GroupActivityResponse> memoActivities = memoRepository.findByGroupIdInOrderByCreatedAtDesc(groupIds).stream()
                 .limit(20)
-                .map(memo -> {
-                    Group group = groupRepository.findById(memo.getGroupId()).orElse(null);
-                    return GroupActivityResponse.builder()
-                            .type("MEMO")
-                            .groupId(memo.getGroupId())
-                            .groupName(group != null ? group.getName() : "알 수 없는 그룹")
-                            .id(memo.getId())
-                            .title(memo.getTitle())
-                            .contentSnippet(truncateContent(memo.getContent()))
-                            .authorNickname(memo.getAuthor().getNickname())
-                            .authorProfileImage(memo.getAuthor().getProfileImage())
-                            .createdAt(memo.getCreatedAt())
-                            .build();
-                })
+                .map(memo -> GroupActivityResponse.builder()
+                        .type("MEMO")
+                        .groupId(memo.getGroupId())
+                        .groupName(groupNames.getOrDefault(memo.getGroupId(), "알 수 없는 모임"))
+                        .id(memo.getId())
+                        .title(memo.getTitle())
+                        .contentSnippet(truncateContent(memo.getContent()))
+                        .authorNickname(memo.getAuthor().getNickname())
+                        .authorProfileImage(memo.getAuthor().getProfileImage())
+                        .createdAt(memo.getCreatedAt())
+                        .build())
                 .collect(Collectors.toList());
 
-        // 2. 최근 토픽 가져오기
+        // 2. 최근 토픽
         List<GroupActivityResponse> topicActivities = groupTopicRepository.findByGroup_IdInOrderByCreatedAtDesc(groupIds).stream()
                 .limit(20)
                 .map(topic -> GroupActivityResponse.builder()
@@ -162,33 +242,31 @@ public class GroupService {
                         .groupName(topic.getGroup().getName())
                         .id(topic.getId())
                         .title(topic.getTitle())
-                        .contentSnippet(truncateContent(topic.getContent().replaceAll("[#*`]", "")))
+                        .contentSnippet(truncateContent(topic.getContent() == null ? "" : topic.getContent().replaceAll("[#*`]", "")))
                         .authorNickname(topic.getAuthor().getNickname())
                         .authorProfileImage(topic.getAuthor().getProfileImage())
                         .createdAt(topic.getCreatedAt())
                         .build())
                 .collect(Collectors.toList());
 
-        // 3. 최근 일정 가져오기
+        // 3. 최근 일정
         List<GroupActivityResponse> scheduleActivities = scheduleRepository.findByGroupIdInOrderByCreatedAtDesc(groupIds).stream()
                 .limit(20)
-                .map(schedule -> {
-                    Group group = groupRepository.findById(schedule.getGroupId()).orElse(null);
-                    return GroupActivityResponse.builder()
-                            .type("SCHEDULE")
-                            .groupId(schedule.getGroupId())
-                            .groupName(group != null ? group.getName() : "알 수 없는 그룹")
-                            .id(schedule.getId())
-                            .title(schedule.getTitle())
-                            .contentSnippet("일정 시간: " + formatDateTime(schedule.getStartTime()) + (schedule.getLocation() != null ? " @ " + schedule.getLocation() : ""))
-                            .authorNickname(schedule.getAuthor().getNickname())
-                            .authorProfileImage(schedule.getAuthor().getProfileImage())
-                            .createdAt(schedule.getCreatedAt())
-                            .build();
-                })
+                .map(schedule -> GroupActivityResponse.builder()
+                        .type("SCHEDULE")
+                        .groupId(schedule.getGroupId())
+                        .groupName(groupNames.getOrDefault(schedule.getGroupId(), "알 수 없는 모임"))
+                        .id(schedule.getId())
+                        .title(schedule.getTitle())
+                        .contentSnippet(formatDateTime(schedule.getStartTime())
+                                + (schedule.getLocation() != null && !schedule.getLocation().isBlank() ? " · " + schedule.getLocation() : ""))
+                        .authorNickname(schedule.getAuthor().getNickname())
+                        .authorProfileImage(schedule.getAuthor().getProfileImage())
+                        .createdAt(schedule.getCreatedAt())
+                        .build())
                 .collect(Collectors.toList());
 
-        // 4. 최근 댓글 가져오기
+        // 4. 최근 댓글
         List<GroupActivityResponse> commentActivities = groupTopicCommentRepository.findByTopic_Group_IdInOrderByCreatedAtDesc(groupIds).stream()
                 .limit(20)
                 .map(comment -> GroupActivityResponse.builder()
@@ -196,7 +274,7 @@ public class GroupService {
                         .groupId(comment.getTopic().getGroup().getId())
                         .groupName(comment.getTopic().getGroup().getName())
                         .id(comment.getTopic().getId()) // 토픽 상세로 이동할 수 있게 토픽 ID 사용
-                        .title("토픽에 댓글이 달렸습니다: " + comment.getTopic().getTitle())
+                        .title("\"" + comment.getTopic().getTitle() + "\" 토픽에 댓글이 달렸어요")
                         .contentSnippet(truncateContent(comment.getContent()))
                         .authorNickname(comment.getAuthor().getNickname())
                         .authorProfileImage(comment.getAuthor().getProfileImage())
@@ -206,67 +284,77 @@ public class GroupService {
 
         return Stream.of(memoActivities, topicActivities, scheduleActivities, commentActivities)
                 .flatMap(List::stream)
-                .sorted(Comparator.comparing(GroupActivityResponse::getCreatedAt).reversed())
+                .sorted(Comparator.comparing(GroupActivityResponse::getCreatedAt,
+                        Comparator.nullsFirst(Comparator.<LocalDateTime>naturalOrder())).reversed())
                 .limit(40)
                 .collect(Collectors.toList());
     }
 
     private String truncateContent(String content) {
         if (content == null) return "";
-        return content.length() > 100 ? content.substring(0, 100) + "..." : content;
+        return CodePointSizeValidator.length(content) > 100 ? CodePointSizeValidator.truncate(content, 100) + "..." : content;
     }
 
-    private String formatDateTime(java.time.LocalDateTime dateTime) {
-        return dateTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+    private String formatDateTime(LocalDateTime dateTime) {
+        return dateTime == null ? "" : dateTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
     }
 
     /**
-     * 그룹 초대. userIds(사용자 UUID)와 emails 중 최소 하나는 비어 있지 않아야 합니다.
-     * 이미 멤버이거나 이미 대기 중인 초대가 있는 사용자는 건너뜁니다.
+     * 모임 초대. userIds(친구의 사용자 ID)만 받는다.
+     * - emails 는 지원 종료(400): 이메일로 가입 여부를 알아내는 경로를 막는다.
+     * - 초대하는 사람은 멤버여야 하고(403), 대상은 초대하는 사람의 친구여야 한다(400, 없는 사용자도 같은 응답).
+     * - 이미 멤버이거나 대기 초대가 있는 사람은 건너뛴다(같은 사람 대기 초대 1건).
+     * - 내보내진 사람은 방장만 다시 초대할 수 있고(그 외 403), 방장이 초대하면 차단이 풀린다.
+     * - 최근에 거절한 사람은 일반 멤버가 일정 기간 다시 초대하지 못한다(건너뜀, 아무도 초대되지 않으면 409).
      */
     @Transactional
     public void inviteMembers(UUID inviterId, UUID groupId, GroupInviteRequest request) {
-        Group group = findGroupById(groupId);
-        User inviter = findUserById(inviterId);
-
-        if (!isMember(groupId, inviterId)) {
-            throw new UnauthorizedAccessException("그룹 멤버만 다른 사용자를 초대할 수 있습니다.");
+        if (request != null && request.getEmails() != null) {
+            throw badRequest("이메일 초대는 더 이상 지원하지 않아요. 친구를 골라 초대해 주세요.");
         }
-
-        List<UUID> userIds = new ArrayList<>();
+        Set<UUID> userIds = new LinkedHashSet<>();
         if (request != null && request.getUserIds() != null) {
             request.getUserIds().stream().filter(id -> id != null).forEach(userIds::add);
         }
-        List<String> emails = new ArrayList<>();
-        if (request != null && request.getEmails() != null) {
-            request.getEmails().stream()
-                    .filter(email -> email != null && !email.isBlank())
-                    .map(String::trim)
-                    .forEach(emails::add);
-        }
-        if (userIds.isEmpty() && emails.isEmpty()) {
-            throw new BadRequestException("초대할 사용자를 한 명 이상 지정해주세요.");
+        if (userIds.isEmpty()) {
+            throw badRequest("초대할 친구를 한 명 이상 골라 주세요.");
         }
 
-        // 초대 대상 수집 (중복 제거)
-        Map<UUID, User> invitees = new LinkedHashMap<>();
+        findGroupById(groupId);
+        if (!isMember(groupId, inviterId)) {
+            throw forbidden("모임 멤버만 친구를 초대할 수 있어요.");
+        }
+        // 같은 사람을 동시에 여러 번 초대해도 대기 초대가 1건만 생기도록 모임 단위로 줄 세운다.
+        Group group = lockGroup(groupId);
+        User inviter = findUserById(inviterId);
+        boolean inviterIsOwner = group.getCreatedBy().getId().equals(inviterId);
+        userIds.remove(inviterId);
+
+        for (UUID userId : userIds) {
+            if (!friendRepository.areFriends(inviterId, userId)) {
+                throw badRequest("친구에게만 초대를 보낼 수 있어요.");
+            }
+        }
+
+        LocalDateTime cooldownFrom = LocalDateTime.now().minusDays(REINVITE_COOLDOWN_DAYS);
+        int created = 0;
+        int coolingDown = 0;
         for (UUID userId : userIds) {
             User invitee = findUserById(userId);
-            invitees.putIfAbsent(invitee.getId(), invitee);
-        }
-        for (String email : emails) {
-            // 이메일이 null 인 사용자는 절대 매칭되지 않는다 (빈 값은 위에서 걸러짐).
-            List<User> matches = userRepository.findAllByEmail(email);
-            if (matches.isEmpty()) {
-                throw new ResourceNotFoundException("사용자", email);
-            }
-            User invitee = matches.get(0);
-            invitees.putIfAbsent(invitee.getId(), invitee);
-        }
+            if (isMember(groupId, userId)) continue;
 
-        for (User invitee : invitees.values()) {
-            if (isMember(groupId, invitee.getId())) continue;
+            if (groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, userId)) {
+                if (!inviterIsOwner) {
+                    throw forbidden(BLOCKED);
+                }
+                groupBlockRepository.deleteBlock(groupId, userId);
+            }
             if (groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)) continue;
+            if (!inviterIsOwner && groupInvitationRepository.existsByGroup_IdAndInvitee_IdAndStatusAndRespondedAtAfter(
+                    groupId, userId, InvitationStatus.REJECTED, cooldownFrom)) {
+                coolingDown++;
+                continue;
+            }
 
             groupInvitationRepository.save(GroupInvitation.builder()
                     .group(group)
@@ -274,6 +362,13 @@ public class GroupService {
                     .invitee(invitee)
                     .status(InvitationStatus.PENDING)
                     .build());
+            created++;
+            eventPublisher.publishEvent(new NotificationEvent(userId, inviterId, NotificationType.GROUP_INVITE,
+                    inviter.getNickname() + "님이 \"" + group.getName() + "\" 모임에 초대했어요.",
+                    "/notifications?tab=invites"));
+        }
+        if (created == 0 && coolingDown > 0) {
+            throw conflict("최근에 초대를 거절한 친구예요. 며칠 뒤에 다시 초대해 주세요.");
         }
     }
 
@@ -295,54 +390,73 @@ public class GroupService {
 
     @Transactional
     public void acceptInvitation(UUID userId, UUID invitationId) {
-        GroupInvitation invitation = findPendingInvitation(userId, invitationId);
+        GroupInvitation invitation = lockPendingInvitation(userId, invitationId);
+        UUID groupId = invitation.getGroup().getId();
+
+        if (groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, userId)) {
+            throw forbidden(BLOCKED);
+        }
 
         invitation.accept();
 
         // 이미 멤버라면(초대 코드로 먼저 가입한 경우 등) 멤버십을 또 만들지 않는다.
-        if (!isMember(invitation.getGroup().getId(), userId)) {
+        if (!isMember(groupId, userId)) {
             groupMemberRepository.save(GroupMember.builder()
                     .group(invitation.getGroup())
                     .user(invitation.getInvitee())
                     .build());
         }
+        // 같은 모임의 다른 대기 초대(과거 중복 데이터)도 정리
+        groupInvitationRepository.deletePendingForInvitee(groupId, userId);
     }
 
     @Transactional
     public void rejectInvitation(UUID userId, UUID invitationId) {
-        GroupInvitation invitation = findPendingInvitation(userId, invitationId);
+        GroupInvitation invitation = lockPendingInvitation(userId, invitationId);
         invitation.reject();
     }
 
-    /** 본인에게 온 초대이고 아직 PENDING 상태일 때만 반환합니다. */
-    private GroupInvitation findPendingInvitation(UUID userId, UUID invitationId) {
-        GroupInvitation invitation = groupInvitationRepository.findById(invitationId)
-                .orElseThrow(() -> new ResourceNotFoundException("초대", invitationId));
+    /**
+     * 본인에게 온 대기 초대를 잠근 채로 돌려준다.
+     * 같은 모임의 작업과 줄을 세우려고 모임 행을 먼저 잠그고, 그 뒤 초대를 새로 읽는다
+     * (수락·거절이 동시에 와도 하나만 성공).
+     */
+    private GroupInvitation lockPendingInvitation(UUID userId, UUID invitationId) {
+        String gone = "초대를 찾을 수 없어요. 이미 취소됐을 수 있어요.";
+        UUID groupId = groupInvitationRepository.findGroupIdById(invitationId).orElseThrow(() -> notFound(gone));
+        groupRepository.findByIdForUpdate(groupId).orElseThrow(() -> notFound(gone));
+        GroupInvitation invitation = groupInvitationRepository.findByIdForUpdate(invitationId).orElseThrow(() -> notFound(gone));
 
         if (!invitation.getInvitee().getId().equals(userId)) {
-            throw new UnauthorizedAccessException("본인에게 온 초대만 처리할 수 있습니다.");
+            throw forbidden("본인에게 온 초대만 처리할 수 있어요.");
         }
         if (invitation.getStatus() != InvitationStatus.PENDING) {
-            throw new ConflictException("이미 처리된 초대입니다.");
+            throw conflict("이미 처리한 초대예요.");
         }
         return invitation;
     }
 
-    /** 그룹 정보(이름/설명/테마/이미지) 수정은 그룹장만 가능합니다. */
+    /** 모임 정보(이름/설명/테마/이미지) 수정은 방장만 가능합니다. */
     @Transactional
     public GroupResponse updateGroup(UUID userId, UUID groupId, GroupRequest request,
-                                     org.springframework.web.multipart.MultipartFile image,
-                                     org.springframework.web.multipart.MultipartFile bgImage) {
+                                     MultipartFile image, MultipartFile bgImage) {
         Group group = findGroupById(groupId);
-        requireOwner(group, userId, "그룹장만 그룹 정보를 수정할 수 있습니다.");
+        requireOwner(group, userId, "방장만 모임 정보를 고칠 수 있어요.");
 
-        if (request.getName() != null) group.setName(request.getName());
+        String name = request.getName() != null ? normalizeName(request.getName()) : null;
+        String colorTheme = normalizeColorTheme(request.getColorTheme(), null);
+
+        // 두 파일을 저장하기 전에 모두 검사한다 (하나만 저장되고 실패하는 고아 파일 방지).
+        groupImageService.requireImage(image);
+        groupImageService.requireImage(bgImage);
+
+        if (name != null) group.setName(name);
         if (request.getDescription() != null) group.setDescription(request.getDescription());
-        if (request.getColorTheme() != null) group.setColorTheme(request.getColorTheme());
+        if (colorTheme != null) group.setColorTheme(colorTheme);
 
-        // 두 파일을 모두 저장(검증)한 뒤에 교체하고, 이전 파일은 커밋 후 삭제한다.
-        String newProfileImage = (image != null && !image.isEmpty()) ? "/uploads/" + fileService.storeFile(image) : null;
-        String newBackgroundImage = (bgImage != null && !bgImage.isEmpty()) ? "/uploads/" + fileService.storeFile(bgImage) : null;
+        // 저장한 파일은 롤백되면 지우고, 이전 파일은 커밋 후 삭제한다.
+        String newProfileImage = (image != null && !image.isEmpty()) ? groupImageService.store(image) : null;
+        String newBackgroundImage = (bgImage != null && !bgImage.isEmpty()) ? groupImageService.store(bgImage) : null;
 
         if (newProfileImage != null) {
             String previous = group.getProfileImage();
@@ -355,56 +469,77 @@ public class GroupService {
             fileService.deleteFileAfterCommit(previous);
         }
 
-        return convertToResponse(group);
-    }
-
-    @Transactional
-    public void kickMember(UUID ownerId, UUID groupId, UUID targetMemberId) {
-        Group group = findGroupById(groupId);
-        requireOwner(group, ownerId, "그룹장만 멤버를 내보낼 수 있습니다.");
-
-        if (ownerId.equals(targetMemberId)) {
-            throw new BadRequestException("자기 자신을 내보낼 수 없습니다.");
-        }
-
-        List<GroupMember> memberships = groupMemberRepository.findAllByGroup_IdAndUser_Id(groupId, targetMemberId);
-        if (memberships.isEmpty()) {
-            throw new ResourceNotFoundException("그룹 멤버", targetMemberId);
-        }
-        groupMemberRepository.deleteAll(memberships);
-        removeFromGroupSchedules(groupId, targetMemberId);
-
-        // 내보낸 멤버가 알고 있는 초대 코드로 다시 들어오지 못하도록 코드를 새로 발급한다.
-        group.setInviteCode(generateUniqueInviteCode());
-    }
-
-    /** 그룹 나가기. 그룹장은 나갈 수 없습니다 (그룹을 삭제해야 함). */
-    @Transactional
-    public void leaveGroup(UUID userId, UUID groupId) {
-        Group group = findGroupById(groupId);
-
-        if (group.getCreatedBy().getId().equals(userId)) {
-            throw new BadRequestException("그룹장은 그룹을 나갈 수 없습니다. 그룹을 삭제해주세요.");
-        }
-
-        List<GroupMember> memberships = groupMemberRepository.findAllByGroup_IdAndUser_Id(groupId, userId);
-        if (memberships.isEmpty()) {
-            throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
-        }
-        groupMemberRepository.deleteAll(memberships);
-        removeFromGroupSchedules(groupId, userId);
+        return convertToResponse(group, userId);
     }
 
     /**
-     * 그룹 삭제 (그룹장 전용).
-     * 멤버/초대/토픽(댓글·AI 분석 포함)은 삭제하고,
-     * 그룹 메모와 그룹 일정은 삭제하지 않고 그룹에서 분리하여(group_id = NULL) 작성자의 개인 메모/일정으로 남깁니다.
+     * 멤버 내보내기 (방장 전용).
+     * 내보낸 사람은 차단 목록에 들어가고, 그 사람이 받은·보낸 이 모임 대기 초대는 정리한다.
+     */
+    @Transactional
+    public void kickMember(UUID ownerId, UUID groupId, UUID targetMemberId) {
+        Group group = lockGroup(groupId);
+        requireOwner(group, ownerId, "방장만 멤버를 내보낼 수 있어요.");
+
+        if (ownerId.equals(targetMemberId)) {
+            throw badRequest("자기 자신은 내보낼 수 없어요.");
+        }
+
+        // 동시에 나가기·내보내기가 와도 예외 없이 지운 행 수로 판단한다.
+        if (groupMemberRepository.deleteMembership(groupId, targetMemberId) == 0) {
+            throw notFound("모임 멤버를 찾을 수 없어요. 이미 나갔을 수 있어요.");
+        }
+        removeFromGroupSchedules(groupId, targetMemberId);
+
+        if (!groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, targetMemberId)) {
+            groupBlockRepository.save(GroupBlock.builder()
+                    .group(group)
+                    .user(userRepository.getReferenceById(targetMemberId))
+                    .blockedBy(group.getCreatedBy())
+                    .build());
+        }
+        groupInvitationRepository.deletePendingForInvitee(groupId, targetMemberId);
+        groupInvitationRepository.deletePendingFromInviter(groupId, targetMemberId);
+
+        // 내보낸 멤버가 알고 있는 초대 코드는 더 이상 쓰지 못하도록 새로 발급한다.
+        group.setInviteCode(generateUniqueInviteCode());
+
+        eventPublisher.publishEvent(new NotificationEvent(targetMemberId, ownerId, NotificationType.GROUP_KICKED,
+                "\"" + group.getName() + "\" 모임에서 내보내졌어요.", "/groups"));
+    }
+
+    /** 모임 나가기. 방장은 나갈 수 없습니다 (모임을 삭제해야 함). */
+    @Transactional
+    public void leaveGroup(UUID userId, UUID groupId) {
+        Group group = lockGroup(groupId);
+
+        if (group.getCreatedBy().getId().equals(userId)) {
+            throw badRequest("방장은 모임을 나갈 수 없어요. 모임을 삭제해 주세요.");
+        }
+
+        if (groupMemberRepository.deleteMembership(groupId, userId) == 0) {
+            throw forbidden(NOT_MEMBER);
+        }
+        removeFromGroupSchedules(groupId, userId);
+        // 나간 사람이 보낸 대기 초대는 더 이상 유효하지 않다.
+        groupInvitationRepository.deletePendingFromInviter(groupId, userId);
+    }
+
+    /**
+     * 모임 삭제 (방장 전용).
+     * 멤버/초대/차단/토픽(댓글·AI 분석 포함)은 삭제하고,
+     * 모임 메모와 모임 일정은 삭제하지 않고 모임에서 분리하여(group_id = NULL) 작성자의 개인 메모/일정으로 남깁니다.
      */
     @Transactional
     public void deleteGroup(UUID userId, UUID groupId) {
-        Group group = findGroupById(groupId);
-        requireOwner(group, userId, "그룹장만 그룹을 삭제할 수 있습니다.");
+        // 동시에 두 번 삭제하면 두 번째는 잠금을 기다린 뒤 404
+        Group group = lockGroup(groupId);
+        requireOwner(group, userId, "방장만 모임을 삭제할 수 있어요.");
+        deleteGroupInternal(group);
+    }
 
+    private void deleteGroupInternal(Group group) {
+        UUID groupId = group.getId();
         for (Memo memo : memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId)) {
             memo.detachFromGroup();
         }
@@ -413,32 +548,66 @@ public class GroupService {
         }
 
         List<GroupTopic> topics = groupTopicRepository.findAllByGroup(group);
+        List<String> topicImages = topics.stream().map(GroupTopic::getImageUrl).toList();
         groupTopicRepository.deleteAll(topics); // 댓글, AI 분석 결과는 cascade 로 함께 삭제
 
         groupInvitationRepository.deleteAllByGroup(group);
+        groupBlockRepository.deleteAllByGroup(group);
         groupMemberRepository.deleteAllByGroup(group);
 
         String profileImage = group.getProfileImage();
         String backgroundImage = group.getBackgroundImage();
 
-        // 자식 행 삭제를 먼저 반영한 뒤 그룹을 삭제한다.
+        // 자식 행 삭제를 먼저 반영한 뒤 모임을 삭제한다.
         groupRepository.flush();
         groupRepository.delete(group);
 
         fileService.deleteFileAfterCommit(profileImage);
         fileService.deleteFileAfterCommit(backgroundImage);
+        topicImages.forEach(fileService::deleteFileAfterCommit);
+    }
+
+    /**
+     * 회원 탈퇴 직전: 내가 방장인 모임은 가장 오래된 다른 멤버에게 넘기고(혼자면 모임 삭제),
+     * 내가 받은·보낸 초대, 차단 기록, 멤버십을 지운다.
+     * (내 토픽·댓글은 GroupTopicService 리스너가 먼저 지운다)
+     */
+    @EventListener
+    @Order(20)
+    @Transactional
+    public void onUserDeleting(UserDeletingEvent event) {
+        UUID userId = event.userId();
+        for (Group owned : groupRepository.findAllByCreatedBy_Id(userId)) {
+            Group group = lockGroup(owned.getId());
+            User successor = groupMemberRepository.findAllByGroup_IdOrderByJoinedAtAsc(group.getId()).stream()
+                    .map(GroupMember::getUser)
+                    .filter(u -> !u.getId().equals(userId))
+                    .findFirst()
+                    .orElse(null);
+            if (successor == null) {
+                deleteGroupInternal(group);
+            } else {
+                group.setCreatedBy(successor);
+            }
+        }
+        groupRepository.flush();
+        groupInvitationRepository.deleteAllInvolvingUser(userId);
+        groupBlockRepository.deleteAllInvolvingUser(userId);
+        groupMemberRepository.deleteAllByUserId(userId);
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────
 
     private Group findGroupById(UUID groupId) {
-        return groupRepository.findById(groupId)
-                .orElseThrow(() -> new ResourceNotFoundException("그룹", groupId));
+        return groupRepository.findById(groupId).orElseThrow(() -> notFound(GROUP_NOT_FOUND));
+    }
+
+    private Group lockGroup(UUID groupId) {
+        return groupRepository.findByIdForUpdate(groupId).orElseThrow(() -> notFound(GROUP_NOT_FOUND));
     }
 
     private User findUserById(UUID userId) {
-        return userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("사용자", userId));
+        return userRepository.findById(userId).orElseThrow(() -> notFound("사용자를 찾을 수 없어요."));
     }
 
     private boolean isMember(UUID groupId, UUID userId) {
@@ -447,17 +616,17 @@ public class GroupService {
 
     private void requireMember(UUID groupId, UUID userId) {
         if (!isMember(groupId, userId)) {
-            throw new UnauthorizedAccessException("해당 그룹의 멤버가 아닙니다.");
+            throw forbidden(NOT_MEMBER);
         }
     }
 
     private void requireOwner(Group group, UUID userId, String message) {
         if (!group.getCreatedBy().getId().equals(userId)) {
-            throw new UnauthorizedAccessException(message);
+            throw forbidden(message);
         }
     }
 
-    /** 그룹을 떠난 사용자를 그 그룹 일정의 참여자 목록에서 제거합니다. */
+    /** 모임을 떠난 사용자를 그 모임 일정의 참여자 목록에서 제거합니다. */
     private void removeFromGroupSchedules(UUID groupId, UUID userId) {
         for (Schedule schedule : scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId)) {
             if (schedule.getParticipants() != null) {
@@ -466,21 +635,26 @@ public class GroupService {
         }
     }
 
-    @Transactional(readOnly = true)
-    protected GroupResponse convertToResponse(Group group) {
-        // 과거 데이터에 중복 멤버십 행이 있어도 멤버가 두 번 나오지 않도록 사용자 기준으로 중복을 제거한다.
+    /** 과거 데이터에 중복 멤버십 행이 있어도 멤버가 두 번 나오지 않도록 사용자 기준으로 중복을 제거한다. */
+    private List<User> distinctMembers(Group group) {
         Map<UUID, User> members = new LinkedHashMap<>();
         for (GroupMember membership : groupMemberRepository.findByGroup(group)) {
             members.putIfAbsent(membership.getUser().getId(), membership.getUser());
         }
-        List<GroupResponse.MemberResponse> memberResponses = members.values().stream()
+        return new ArrayList<>(members.values());
+    }
+
+    private GroupResponse convertToResponse(Group group, UUID viewerId) {
+        List<GroupResponse.MemberResponse> memberResponses = distinctMembers(group).stream()
                 .map(u -> GroupResponse.MemberResponse.builder()
                         .id(u.getId())
+                        .customId(u.getCustomId())
                         .nickname(u.getNickname())
                         .profileImage(u.getProfileImage())
                         .build())
                 .collect(Collectors.toList());
 
+        boolean owner = group.getCreatedBy().getId().equals(viewerId);
         return GroupResponse.builder()
                 .id(group.getId())
                 .name(group.getName())
@@ -494,6 +668,7 @@ public class GroupService {
                 .backgroundImage(group.getBackgroundImage())
                 .memberCount(memberResponses.size())
                 .createdAt(group.getCreatedAt())
+                .myRole(owner ? "OWNER" : "MEMBER")
                 .build();
     }
 }

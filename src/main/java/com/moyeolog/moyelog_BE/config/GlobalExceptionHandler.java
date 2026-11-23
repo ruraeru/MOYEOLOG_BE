@@ -5,7 +5,14 @@ import com.moyeolog.moyelog_BE.exception.MoyeologException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
+import com.moyeolog.moyelog_BE.security.SecurityConfig;
+import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.OptimisticLockException;
+import jakarta.persistence.PessimisticLockException;
+import org.hibernate.StaleStateException;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.jpa.JpaObjectRetrievalFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -36,6 +43,8 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 @Slf4j
 public class GlobalExceptionHandler {
 
+    public static final String CONFLICT_MESSAGE = "다른 곳에서 먼저 바뀌었어요. 새로고침 후 다시 시도해 주세요.";
+
     @ExceptionHandler(MoyeologException.class)
     public ResponseEntity<ErrorResponse> handleMoyeologException(MoyeologException e) {
         if (e.getStatus().is5xxServerError()) {
@@ -51,7 +60,7 @@ public class GlobalExceptionHandler {
     /** @Valid 검증 실패 (MethodArgumentNotValidException 은 BindException 의 하위 타입) */
     @ExceptionHandler(BindException.class)
     public ResponseEntity<ErrorResponse> handleBindException(BindException e) {
-        String message = "요청 값이 올바르지 않습니다.";
+        String message = "요청 값이 올바르지 않아요.";
         FieldError fieldError = e.getBindingResult().getFieldError();
         if (fieldError != null) {
             message = fieldMessage(fieldError);
@@ -70,7 +79,7 @@ public class GlobalExceptionHandler {
                 .map(error -> error instanceof FieldError fe ? fieldMessage(fe) : error.getDefaultMessage())
                 .filter(m -> m != null && !m.isBlank())
                 .findFirst()
-                .orElse("요청 값이 올바르지 않습니다.");
+                .orElse("요청 값이 올바르지 않아요.");
         return build(HttpStatus.BAD_REQUEST, message);
     }
 
@@ -80,42 +89,42 @@ public class GlobalExceptionHandler {
                 .map(ConstraintViolation::getMessage)
                 .filter(m -> m != null && !m.isBlank())
                 .findFirst()
-                .orElse("요청 값이 올바르지 않습니다.");
+                .orElse("요청 값이 올바르지 않아요.");
         return build(HttpStatus.BAD_REQUEST, message);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleNotReadable(HttpMessageNotReadableException e) {
         log.warn("Unreadable request body: {}", e.getClass().getSimpleName());
-        return build(HttpStatus.BAD_REQUEST, "요청 본문 형식이 올바르지 않습니다.");
+        return build(HttpStatus.BAD_REQUEST, "요청 본문 형식이 올바르지 않아요.");
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
-        return build(HttpStatus.BAD_REQUEST, "요청 값의 형식이 올바르지 않습니다: " + e.getName());
+        return build(HttpStatus.BAD_REQUEST, "요청 값의 형식이 올바르지 않아요.");
     }
 
     /** 누락된 요청 파라미터 / 헤더 / 경로 변수 */
     @ExceptionHandler(ServletRequestBindingException.class)
     public ResponseEntity<ErrorResponse> handleMissingParameter(ServletRequestBindingException e) {
-        return build(HttpStatus.BAD_REQUEST, "필수 요청 값이 누락되었습니다.");
+        return build(HttpStatus.BAD_REQUEST, "필요한 요청 값이 빠졌어요.");
     }
 
     @ExceptionHandler(MissingServletRequestPartException.class)
     public ResponseEntity<ErrorResponse> handleMissingPart(MissingServletRequestPartException e) {
-        return build(HttpStatus.BAD_REQUEST, "필수 요청 항목이 누락되었습니다: " + e.getRequestPartName());
+        return build(HttpStatus.BAD_REQUEST, "필요한 요청 항목이 빠졌어요.");
     }
 
     @ExceptionHandler(MultipartException.class)
     public ResponseEntity<ErrorResponse> handleMultipart(MultipartException e) {
         log.warn("Malformed multipart request: {}", e.getClass().getSimpleName());
-        return build(HttpStatus.BAD_REQUEST, "멀티파트 요청 형식이 올바르지 않습니다.");
+        return build(HttpStatus.BAD_REQUEST, "요청 형식이 올바르지 않아요.");
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgumentException(IllegalArgumentException e) {
         log.warn("Invalid argument: ", e);
-        return build(HttpStatus.BAD_REQUEST, "유효하지 않은 요청 데이터입니다.");
+        return build(HttpStatus.BAD_REQUEST, "요청 값이 올바르지 않아요.");
     }
 
     // ─── 403 / 404 / 405 / 406 / 409 / 413 / 415 ────────────────────
@@ -123,38 +132,55 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccessDeniedException(AccessDeniedException e) {
         log.warn("Access denied: {}", e.getMessage());
-        return build(HttpStatus.FORBIDDEN, "접근 권한이 없습니다.");
+        return build(HttpStatus.FORBIDDEN, SecurityConfig.FORBIDDEN_MESSAGE);
     }
 
     @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
     public ResponseEntity<ErrorResponse> handleNotFound(Exception e) {
-        return build(HttpStatus.NOT_FOUND, "요청한 리소스를 찾을 수 없습니다.");
+        return build(HttpStatus.NOT_FOUND, "요청한 항목을 찾을 수 없어요.");
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<ErrorResponse> handleMethodNotSupported(HttpRequestMethodNotSupportedException e) {
-        return build(HttpStatus.METHOD_NOT_ALLOWED, "지원하지 않는 HTTP 메서드입니다.");
+        return build(HttpStatus.METHOD_NOT_ALLOWED, "지원하지 않는 요청 방식이에요.");
     }
 
     @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
     public ResponseEntity<ErrorResponse> handleNotAcceptable(HttpMediaTypeNotAcceptableException e) {
-        return build(HttpStatus.NOT_ACCEPTABLE, "지원하지 않는 응답 형식입니다.");
+        return build(HttpStatus.NOT_ACCEPTABLE, "지원하지 않는 응답 형식이에요.");
     }
 
-    @ExceptionHandler(DataIntegrityViolationException.class)
-    public ResponseEntity<ErrorResponse> handleDataIntegrity(DataIntegrityViolationException e) {
-        log.warn("Data integrity violation: ", e);
-        return build(HttpStatus.CONFLICT, "이미 존재하거나 다른 데이터와 충돌하는 요청입니다.");
+    /**
+     * 안전망: 동시 요청 경합(낙관적/비관적 잠금 실패, 이미 지워진 행 갱신, 유니크 제약 위반)은 500 이 아니라 409.
+     * 각 서비스가 상황에 맞는 문장으로 먼저 처리하는 것이 원칙이고, 여기는 놓친 경우를 받는다.
+     */
+    @ExceptionHandler({
+            ConcurrencyFailureException.class,          // ObjectOptimisticLockingFailureException, CannotAcquireLockException 등
+            OptimisticLockException.class,
+            PessimisticLockException.class,
+            StaleStateException.class,
+            DataIntegrityViolationException.class
+    })
+    public ResponseEntity<ErrorResponse> handleConflict(Exception e) {
+        log.warn("Concurrent modification or constraint violation: {}", e.getClass().getSimpleName());
+        return build(HttpStatus.CONFLICT, CONFLICT_MESSAGE);
+    }
+
+    /** 안전망: 처리 도중 다른 요청이 지운 엔티티를 읽으려 한 경우 */
+    @ExceptionHandler({EntityNotFoundException.class, JpaObjectRetrievalFailureException.class})
+    public ResponseEntity<ErrorResponse> handleEntityGone(Exception e) {
+        log.warn("Entity disappeared during request: {}", e.getClass().getSimpleName());
+        return build(HttpStatus.NOT_FOUND, "요청한 항목을 찾을 수 없어요. 이미 삭제됐을 수 있어요.");
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ErrorResponse> handleMaxUploadSize(MaxUploadSizeExceededException e) {
-        return build(HttpStatus.PAYLOAD_TOO_LARGE, "업로드 가능한 최대 용량을 초과했습니다.");
+        return build(HttpStatus.PAYLOAD_TOO_LARGE, "파일이 너무 커요. 10MB 이하로 올려 주세요.");
     }
 
     @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
     public ResponseEntity<ErrorResponse> handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException e) {
-        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "지원하지 않는 Content-Type 입니다.");
+        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "지원하지 않는 요청 형식이에요.");
     }
 
     // ─── 500 ────────────────────────────────────────────────────────
@@ -167,11 +193,11 @@ public class GlobalExceptionHandler {
             HttpStatus status = HttpStatus.resolve(statusCode.value());
             if (status != null && status.is4xxClientError()) {
                 log.warn("Client error: status={}, type={}", status, e.getClass().getSimpleName());
-                return build(status, "요청을 처리할 수 없습니다.");
+                return build(status, "요청을 처리할 수 없어요.");
             }
         }
         log.error("Unexpected error occurred: ", e);
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, "서버에서 문제가 생겼어요. 잠시 후 다시 시도해 주세요.");
     }
 
     // ─── helpers ────────────────────────────────────────────────────
@@ -179,7 +205,7 @@ public class GlobalExceptionHandler {
     private String fieldMessage(FieldError fieldError) {
         // 타입 변환 실패(예: 잘못된 UUID)는 기본 메시지에 클래스명이 들어가므로 고정 문구로 대체한다.
         if (fieldError.isBindingFailure() || fieldError.getDefaultMessage() == null) {
-            return "요청 값의 형식이 올바르지 않습니다: " + fieldError.getField();
+            return "요청 값의 형식이 올바르지 않아요.";
         }
         return fieldError.getDefaultMessage();
     }

@@ -25,7 +25,7 @@ public class SwaggerConfig {
         return new OpenAPI()
                 .info(new Info()
                         .title("Moyeolog API Documentation")
-                        .description("Moyeolog 백엔드 API 명세서입니다.")
+                        .description("Moyeolog 백엔드 API 명세서예요.")
                         .version("v0.0.1"))
                 .addSecurityItem(securityRequirement)
                 .components(components);

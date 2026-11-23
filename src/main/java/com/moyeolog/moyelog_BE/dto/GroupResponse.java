@@ -24,6 +24,8 @@ public class GroupResponse {
     private String backgroundImage;
     private int memberCount;
     private LocalDateTime createdAt;
+    /** 요청한 사용자의 역할: "OWNER" | "MEMBER" */
+    private String myRole;
 
     @Getter
     @Setter
@@ -32,6 +34,7 @@ public class GroupResponse {
     @Builder
     public static class MemberResponse {
         private UUID id;
+        private String customId;
         private String nickname;
         private String profileImage;
     }

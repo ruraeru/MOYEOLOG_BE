@@ -68,7 +68,8 @@ class FileServiceTest {
         byte[] riffButNotWebp = concat("RIFF".getBytes(), new byte[]{1, 2, 3, 4}, "WAVEfmt ".getBytes());
 
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.png", "image/png", html)))
-                .isInstanceOf(BadRequestException.class);
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("JPEG, PNG, GIF, WEBP 이미지만 올릴 수 있어요.");
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.svg", "image/svg+xml", svg)))
                 .isInstanceOf(BadRequestException.class);
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.webp", "image/webp", riffButNotWebp)))
@@ -76,7 +77,8 @@ class FileServiceTest {
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.png", "image/png", new byte[]{(byte) 0x89, 'P'})))
                 .isInstanceOf(BadRequestException.class);
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.png", "image/png", new byte[0])))
-                .isInstanceOf(BadRequestException.class);
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("올릴 파일이 비어 있어요.");
 
         try (var files = Files.list(uploadDir)) {
             assertThat(files).isEmpty();
@@ -146,5 +148,43 @@ class FileServiceTest {
         String another = fileService.storeFile(new MockMultipartFile("image", "a.png", "image/png", PNG));
         fileService.deleteFileAfterCommit("/uploads/" + another);
         assertThat(uploadDir.resolve(another)).doesNotExist();
+    }
+
+    @Test
+    @DisplayName("AI 분석용 이미지: data URL 은 내용(매직 바이트)이 이미지일 때만, /uploads 는 업로드 디렉터리 안의 파일만")
+    void loadImageForAnalysis_DataUrlAndUploads() throws Exception {
+        String b64 = Base64.getEncoder().encodeToString(JPEG);
+        // 선언한 MIME(png)이 아니라 실제 내용(JPEG)으로 판별한다
+        assertThat(fileService.loadImageForAnalysis("data:image/png;base64," + b64)).get()
+                .satisfies(img -> {
+                    assertThat(img.mimeType()).isEqualTo("image/jpeg");
+                    assertThat(img.base64()).isEqualTo(b64);
+                });
+        assertThat(fileService.loadImageForAnalysis("DATA:image/jpeg;base64," + b64)).isPresent();
+
+        // 이미지가 아닌 내용, 깨진 base64, 다른 MIME, 빈 값
+        String html = Base64.getEncoder().encodeToString("<script>alert(1)</script>".getBytes());
+        assertThat(fileService.loadImageForAnalysis("data:image/png;base64," + html)).isEmpty();
+        assertThat(fileService.loadImageForAnalysis("data:image/png;base64,%%%%")).isEmpty();
+        assertThat(fileService.loadImageForAnalysis("data:text/html;base64," + b64)).isEmpty();
+        assertThat(fileService.loadImageForAnalysis("data:image/png;base64,")).isEmpty();
+        assertThat(fileService.loadImageForAnalysis(null)).isEmpty();
+
+        String name = fileService.storeFile(new MockMultipartFile("image", "a.png", "image/png", PNG));
+        assertThat(fileService.loadImageForAnalysis("/uploads/" + name)).get()
+                .extracting(FileService.ImageData::mimeType).isEqualTo("image/png");
+        assertThat(fileService.loadImageForAnalysis("/uploads/../secret.png")).isEmpty();
+        // 기존 loadImage 는 data URL 을 읽지 않는다
+        assertThat(fileService.loadImage("data:image/png;base64," + b64)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("storeImage: 이미지 바이트를 업로드 디렉터리에 저장하고 /uploads 주소를 돌려준다")
+    void storeImage_SavesBytes() throws Exception {
+        String url = fileService.storeImage(GIF);
+        assertThat(url).matches("/uploads/[0-9a-f-]{36}\\.gif");
+        assertThat(Files.readAllBytes(uploadDir.resolve(url.substring("/uploads/".length())))).isEqualTo(GIF);
+        assertThatThrownBy(() -> fileService.storeImage("not an image".getBytes()))
+                .isInstanceOf(BadRequestException.class);
     }
 }

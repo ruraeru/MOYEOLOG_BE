@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
+import java.time.Instant;
 import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
@@ -27,8 +28,13 @@ public class JwtProvider {
     /**
      * 검증이 끝난 토큰의 내용.
      * type 은 토큰 종류 클레임이 도입되기 전에 발급된 토큰이면 null 입니다.
+     * jti·issuedAt 은 없을 수 있고(예전 토큰), expiresAt 은 항상 있습니다(exp 없는 토큰은 거부).
      */
-    public record ParsedToken(String userId, String type) {
+    public record ParsedToken(String userId, String type, String jti, Instant issuedAt, Instant expiresAt) {
+        public ParsedToken(String userId, String type) {
+            this(userId, type, null, null, null);
+        }
+
         public boolean isAccess() {
             return TYPE_ACCESS.equals(type);
         }
@@ -98,8 +104,15 @@ public class JwtProvider {
             if (subject == null || subject.isBlank()) {
                 return Optional.empty();
             }
+            // 만료 시각이 없는 토큰은 영구히 유효해지므로 받지 않는다.
+            Date expiration = claims.getExpiration();
+            if (expiration == null) {
+                return Optional.empty();
+            }
             Object type = claims.get(CLAIM_TOKEN_TYPE);
-            return Optional.of(new ParsedToken(subject, type != null ? type.toString() : null));
+            Date issuedAt = claims.getIssuedAt();
+            return Optional.of(new ParsedToken(subject, type != null ? type.toString() : null, claims.getId(),
+                    issuedAt != null ? issuedAt.toInstant() : null, expiration.toInstant()));
         } catch (JwtException | IllegalArgumentException e) {
             // JwtException 은 ExpiredJwtException, MalformedJwtException, SignatureException,
             // UnsupportedJwtException 등을 모두 포함한다. 토큰 값은 로그에 남기지 않는다.

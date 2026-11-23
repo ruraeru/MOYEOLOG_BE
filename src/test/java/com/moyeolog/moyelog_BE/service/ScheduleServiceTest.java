@@ -33,6 +33,7 @@ class ScheduleServiceTest {
     @Mock private GroupRepository groupRepository;
     @Mock private FriendRepository friendRepository;
     @Mock private MemoShareRepository memoShareRepository;
+    @Mock private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private ScheduleService scheduleService;
 
@@ -78,7 +79,7 @@ class ScheduleServiceTest {
         UUID scheduleId = UUID.randomUUID();
         User author = User.builder().id(UUID.randomUUID()).build();
         Schedule schedule = Schedule.builder().id(scheduleId).author(author).build();
-        given(scheduleRepository.findById(scheduleId)).willReturn(Optional.of(schedule));
+        given(scheduleRepository.findByIdForUpdate(scheduleId)).willReturn(Optional.of(schedule));
 
         // when & then
         assertThatThrownBy(() -> scheduleService.deleteSchedule(userId, scheduleId))
@@ -110,7 +111,7 @@ class ScheduleServiceTest {
 
         given(groupRepository.existsById(groupId)).willReturn(false);
         assertThatThrownBy(() -> scheduleService.createSchedule(userId, request))
-                .isInstanceOf(com.moyeolog.moyelog_BE.exception.ResourceNotFoundException.class);
+                .isInstanceOf(ItemNotFoundException.class);
 
         given(groupRepository.existsById(groupId)).willReturn(true);
         given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
@@ -169,5 +170,84 @@ class ScheduleServiceTest {
 
         assertThatThrownBy(() -> scheduleService.getGroupSchedules(userId, groupId))
                 .isInstanceOf(com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException.class);
+    }
+
+    @Test
+    @DisplayName("이미 지워진 일정을 다시 지우면 404 (동시 삭제)")
+    void deleteSchedule_AlreadyDeleted_404() {
+        UUID scheduleId = UUID.randomUUID();
+        given(scheduleRepository.findByIdForUpdate(scheduleId)).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> scheduleService.deleteSchedule(userId, scheduleId))
+                .isInstanceOf(ItemNotFoundException.class);
+    }
+
+    @Test
+    @DisplayName("모임을 나간 작성자는 모임 일정을 고칠 수 없고(403), 삭제는 할 수 있다")
+    void groupSchedule_FormerMemberAuthor() {
+        UUID groupId = UUID.randomUUID();
+        Schedule schedule = Schedule.builder().id(UUID.randomUUID()).title("t").author(user).groupId(groupId)
+                .participants(new java.util.ArrayList<>()).taggedMemos(new java.util.ArrayList<>()).build();
+        given(scheduleRepository.findByIdForUpdate(schedule.getId())).willReturn(Optional.of(schedule));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
+
+        assertThatThrownBy(() -> scheduleService.updateSchedule(userId, schedule.getId(), baseRequest().groupId(groupId).build()))
+                .isInstanceOf(com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException.class);
+        assertThatThrownBy(() -> scheduleService.updateSchedule(userId, schedule.getId(), baseRequest().build()))
+                .isInstanceOf(com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException.class);
+        assertThat(schedule.getGroupId()).isEqualTo(groupId);
+
+        scheduleService.deleteSchedule(userId, schedule.getId());
+        verify(scheduleRepository).delete(schedule);
+    }
+
+    @Test
+    @DisplayName("친구를 끊은 기존 참여자는 수정 때 조용히 빠지고, 새로 넣는 친구 아닌 사람은 400")
+    void updateSchedule_DropsStaleParticipants() {
+        User exFriend = User.builder().id(UUID.randomUUID()).nickname("ex").build();
+        UUID stranger = UUID.randomUUID();
+        Schedule schedule = Schedule.builder().id(UUID.randomUUID()).title("t").author(user)
+                .participants(new java.util.ArrayList<>(java.util.List.of(exFriend)))
+                .taggedMemos(new java.util.ArrayList<>()).build();
+        given(scheduleRepository.findByIdForUpdate(schedule.getId())).willReturn(Optional.of(schedule));
+        given(friendRepository.areFriends(userId, exFriend.getId())).willReturn(false);
+
+        ScheduleResponse response = scheduleService.updateSchedule(userId, schedule.getId(),
+                baseRequest().participantIds(java.util.List.of(exFriend.getId())).build());
+        assertThat(response.getParticipants()).isEmpty();
+
+        given(friendRepository.areFriends(userId, stranger)).willReturn(false);
+        assertThatThrownBy(() -> scheduleService.updateSchedule(userId, schedule.getId(),
+                baseRequest().participantIds(java.util.List.of(stranger)).build()))
+                .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
+    }
+
+    @Test
+    @DisplayName("일정 수정: 새로 추가된 참여자에게만 알림, 응답의 연결 메모는 볼 수 있는 것만")
+    void updateSchedule_NotifiesNewParticipantsOnly_AndFiltersMemos() {
+        User oldFriend = User.builder().id(UUID.randomUUID()).nickname("old").build();
+        User newFriend = User.builder().id(UUID.randomUUID()).nickname("new").build();
+        User other = User.builder().id(UUID.randomUUID()).build();
+        com.moyeolog.moyelog_BE.entity.Memo hidden = com.moyeolog.moyelog_BE.entity.Memo.builder()
+                .id(UUID.randomUUID()).author(other).title("비밀").build();
+        Schedule schedule = Schedule.builder().id(UUID.randomUUID()).title("t").author(user)
+                .participants(new java.util.ArrayList<>(java.util.List.of(oldFriend)))
+                .taggedMemos(new java.util.ArrayList<>(java.util.List.of(hidden))).build();
+        given(scheduleRepository.findByIdForUpdate(schedule.getId())).willReturn(Optional.of(schedule));
+        given(friendRepository.areFriends(userId, oldFriend.getId())).willReturn(true);
+        given(friendRepository.areFriends(userId, newFriend.getId())).willReturn(true);
+        given(userRepository.findAllById(any())).willReturn(java.util.List.of(oldFriend, newFriend));
+        given(memoRepository.findAllById(org.mockito.ArgumentMatchers.<Iterable<UUID>>any())).willReturn(java.util.List.of(hidden));
+
+        ScheduleResponse response = scheduleService.updateSchedule(userId, schedule.getId(), baseRequest()
+                .participantIds(java.util.List.of(oldFriend.getId(), newFriend.getId()))
+                .taggedMemoIds(java.util.List.of(hidden.getId())).build());
+
+        org.mockito.ArgumentCaptor<com.moyeolog.moyelog_BE.event.NotificationEvent> captor =
+                org.mockito.ArgumentCaptor.forClass(com.moyeolog.moyelog_BE.event.NotificationEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().recipientId()).isEqualTo(newFriend.getId());
+        assertThat(captor.getValue().link()).isEqualTo("/schedule/" + schedule.getId());
+        assertThat(response.getTaggedMemos()).isEmpty();
     }
 }

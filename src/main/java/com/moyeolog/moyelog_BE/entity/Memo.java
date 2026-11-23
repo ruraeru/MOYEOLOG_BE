@@ -3,7 +3,9 @@ package com.moyeolog.moyelog_BE.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Entity
@@ -54,6 +56,21 @@ public class Memo {
     @ManyToMany(mappedBy = "taggedMemos")
     private List<Schedule> taggedSchedules;
 
+    /**
+     * 메모 쪽에서(본문 언급으로) 연결한 일정 ID.
+     * 메모를 고칠 때는 여기에 있는 연결만 끊는다. 일정 쪽에서 만든 연결(일정 → 메모)은 메모 수정으로 사라지지 않는다.
+     */
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "memo_schedule_mentions", joinColumns = @JoinColumn(name = "memo_id"))
+    @Column(name = "schedule_id", columnDefinition = "BINARY(16)")
+    @Builder.Default
+    private Set<UUID> mentionedScheduleIds = new HashSet<>();
+
+    /** 낙관적 잠금. 기존 행은 0 으로 채워진다. */
+    @Version
+    @Column(name = "version", nullable = false, columnDefinition = "BIGINT NOT NULL DEFAULT 0")
+    private Long version;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
@@ -77,6 +94,21 @@ public class Memo {
         this.imageUrl = imageUrl;
         this.lastModifier = modifier;
         this.taggedMemos = taggedMemos;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 태그처럼 다른 테이블만 바뀌는 수정도 메모 행을 갱신해 version 을 올린다. */
+    public void markModified(User modifier) {
+        this.lastModifier = modifier;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void replaceMentionedSchedules(Set<UUID> scheduleIds) {
+        if (this.mentionedScheduleIds == null) {
+            this.mentionedScheduleIds = new HashSet<>();
+        }
+        this.mentionedScheduleIds.clear();
+        this.mentionedScheduleIds.addAll(scheduleIds);
     }
 
     /** 그룹이 삭제될 때 그룹 메모를 작성자의 개인 메모로 되돌립니다. */

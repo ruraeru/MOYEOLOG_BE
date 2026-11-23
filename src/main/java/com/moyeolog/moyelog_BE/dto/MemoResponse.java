@@ -29,6 +29,21 @@ public class MemoResponse {
     private List<ScheduleSummaryResponse> taggedSchedules;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private Long version; // 수정 요청에 그대로 돌려보내면 낙관적 잠금
+    private Permissions permissions; // 요청한 사용자 기준
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class Permissions {
+        private boolean edit;
+        private boolean delete;
+        private boolean share;
+        private boolean tag;
+        private boolean analyze;
+    }
 
     @Getter
     @Setter
