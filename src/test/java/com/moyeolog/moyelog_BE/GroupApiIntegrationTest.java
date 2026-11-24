@@ -6,16 +6,22 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.AbstractMockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -39,6 +45,11 @@ class GroupApiIntegrationTest {
 
     @Autowired private WebApplicationContext context;
     @Autowired private JdbcTemplate jdbcTemplate;
+
+    private static final byte[] PNG = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0, 1, 2, 3};
+
+    @Value("${file.upload-dir}")
+    private String uploadDir;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private MockMvc mockMvc;
@@ -109,6 +120,97 @@ class GroupApiIntegrationTest {
                 .andExpect(status().isBadRequest());
         mockMvc.perform(jsonBody(auth(post("/api/groups"), owner), Map.of("name", "n", "colorTheme", "rose")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.colorTheme").value("rose"));
+    }
+
+    private MockMultipartHttpServletRequestBuilder putGroup(String groupId, Object group, boolean image, boolean bgImage)
+            throws Exception {
+        MockMultipartHttpServletRequestBuilder builder = multipart("/api/groups/" + groupId);
+        builder.file(new MockMultipartFile("group", "", "application/json", mapper.writeValueAsBytes(group)));
+        if (image) builder.file(new MockMultipartFile("image", "p.png", "image/png", PNG));
+        if (bgImage) builder.file(new MockMultipartFile("bgImage", "b.png", "image/png", PNG));
+        builder.with(r -> {
+            r.setMethod("PUT");
+            return r;
+        });
+        return builder;
+    }
+
+    private Path uploaded(String url) {
+        return Paths.get(uploadDir).resolve(url.substring("/uploads/".length()));
+    }
+
+    @Test
+    @DisplayName("모임 사진·색: 올리기 → 목록·상세·미리보기에 반영 → 교체 시 이전 파일 삭제 → 지우기 플래그 → 방장 아니면 403")
+    void groupIdentity() throws Exception {
+        Session owner = login("gi-owner");
+        Session member = login("gi-member");
+        JsonNode group = createGroup(owner, Map.of("name", "표지 모임"));
+        String groupId = group.path("id").asText();
+        String code = group.path("inviteCode").asText();
+        mockMvc.perform(auth(post("/api/groups/join").param("code", code), member)).andExpect(status().isOk());
+
+        JsonNode first = json(mockMvc.perform(auth(putGroup(groupId, Map.of("name", "표지 모임", "colorTheme", "Amber"), true, true), owner))
+                .andExpect(status().isOk()).andReturn());
+        String profile = first.path("profileImage").asText();
+        String background = first.path("backgroundImage").asText();
+        assertThat(profile).startsWith("/uploads/");
+        assertThat(background).startsWith("/uploads/");
+        assertThat(first.path("colorTheme").asText()).isEqualTo("amber");
+        assertThat(Files.exists(uploaded(profile))).isTrue();
+        assertThat(Files.exists(uploaded(background))).isTrue();
+
+        // 멤버가 보는 목록·상세, 코드 미리보기에 모두 나온다
+        JsonNode mine = json(mockMvc.perform(auth(get("/api/groups"), member)).andExpect(status().isOk()).andReturn());
+        JsonNode listed = null;
+        for (JsonNode g : mine) {
+            if (g.path("id").asText().equals(groupId)) listed = g;
+        }
+        assertThat(listed).isNotNull();
+        assertThat(listed.path("profileImage").asText()).isEqualTo(profile);
+        assertThat(listed.path("backgroundImage").asText()).isEqualTo(background);
+        assertThat(listed.path("colorTheme").asText()).isEqualTo("amber");
+        mockMvc.perform(auth(get("/api/groups/" + groupId), member))
+                .andExpect(jsonPath("$.profileImage").value(profile))
+                .andExpect(jsonPath("$.backgroundImage").value(background))
+                .andExpect(jsonPath("$.colorTheme").value("amber"));
+        mockMvc.perform(auth(get("/api/groups/preview").param("code", code), login("gi-guest")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profileImage").value(profile))
+                .andExpect(jsonPath("$.backgroundImage").value(background))
+                .andExpect(jsonPath("$.colorTheme").value("amber"));
+
+        // 방장이 아니면 사진을 지울 수 없다. 잘못된 색은 400 이고 사진도 그대로
+        mockMvc.perform(auth(putGroup(groupId, Map.of("name", "x", "removeProfileImage", true), false, false), member))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(auth(putGroup(groupId, Map.of("name", "x", "colorTheme", "#ff0000", "removeProfileImage", true), false, false), owner))
+                .andExpect(status().isBadRequest());
+        assertThat(Files.exists(uploaded(profile))).isTrue();
+
+        // 프로필 교체: 이전 파일은 지워지고 배경은 그대로
+        JsonNode replaced = json(mockMvc.perform(auth(putGroup(groupId, Map.of("name", "표지 모임"), true, false), owner))
+                .andExpect(status().isOk()).andReturn());
+        String newProfile = replaced.path("profileImage").asText();
+        assertThat(newProfile).isNotEqualTo(profile).startsWith("/uploads/");
+        assertThat(replaced.path("backgroundImage").asText()).isEqualTo(background);
+        assertThat(Files.exists(uploaded(profile))).isFalse();
+        assertThat(Files.exists(uploaded(newProfile))).isTrue();
+
+        // 지우기 플래그: 두 사진 모두 null, 파일도 삭제. 색은 그대로
+        mockMvc.perform(auth(putGroup(groupId, Map.of("name", "표지 모임",
+                        "removeProfileImage", true, "removeBackgroundImage", true), false, false), owner))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profileImage").doesNotExist())
+                .andExpect(jsonPath("$.backgroundImage").doesNotExist())
+                .andExpect(jsonPath("$.colorTheme").value("amber"));
+        assertThat(Files.exists(uploaded(newProfile))).isFalse();
+        assertThat(Files.exists(uploaded(background))).isFalse();
+        mockMvc.perform(auth(get("/api/groups/preview").param("code", code), member))
+                .andExpect(jsonPath("$.backgroundImage").doesNotExist());
+
+        // 지우기와 새 파일이 같이 오면 새 파일이 이긴다
+        mockMvc.perform(auth(putGroup(groupId, Map.of("name", "표지 모임", "removeBackgroundImage", true), false, true), owner))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.backgroundImage").value(org.hamcrest.Matchers.startsWith("/uploads/")));
     }
 
     @Test
