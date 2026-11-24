@@ -31,6 +31,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -102,16 +103,25 @@ public class GroupService {
         return trimmed;
     }
 
-    /** colorTheme: 정해진 키만. 비어 있으면 fallback */
+    /** colorTheme: 정해진 키만(대소문자 무시). 비어 있으면 fallback */
     static String normalizeColorTheme(String colorTheme, String fallback) {
         if (colorTheme == null || colorTheme.isBlank()) {
             return fallback;
         }
-        String value = colorTheme.trim();
+        String value = colorTheme.trim().toLowerCase(Locale.ROOT);
         if (!COLOR_THEMES.contains(value)) {
             throw badRequest("모임 색을 다시 골라 주세요.");
         }
         return value;
+    }
+
+    /** 응답용: 검사 전에 저장된 옛 값(null·hex 등)은 기본 색으로 내려 준다 */
+    static String displayColorTheme(String stored) {
+        if (stored == null) {
+            return DEFAULT_COLOR_THEME;
+        }
+        String value = stored.trim().toLowerCase(Locale.ROOT);
+        return COLOR_THEMES.contains(value) ? value : DEFAULT_COLOR_THEME;
     }
 
     private String generateUniqueInviteCode() {
@@ -145,8 +155,9 @@ public class GroupService {
                 .id(group.getId())
                 .name(group.getName())
                 .description(group.getDescription())
-                .colorTheme(group.getColorTheme())
+                .colorTheme(displayColorTheme(group.getColorTheme()))
                 .profileImage(group.getProfileImage())
+                .backgroundImage(group.getBackgroundImage())
                 .memberCount(distinctMembers(group).size())
                 .ownerNickname(group.getCreatedBy().getNickname())
                 .alreadyMember(isMember(group.getId(), userId))
@@ -436,7 +447,10 @@ public class GroupService {
         return invitation;
     }
 
-    /** 모임 정보(이름/설명/테마/이미지) 수정은 방장만 가능합니다. */
+    /**
+     * 모임 정보(이름/설명/테마/이미지) 수정은 방장만 가능합니다.
+     * 사진: 새 파일이 있으면 교체, 없고 remove 플래그가 true 면 지운다. 이전 파일은 커밋 뒤 삭제.
+     */
     @Transactional
     public GroupResponse updateGroup(UUID userId, UUID groupId, GroupRequest request,
                                      MultipartFile image, MultipartFile bgImage) {
@@ -458,12 +472,12 @@ public class GroupService {
         String newProfileImage = (image != null && !image.isEmpty()) ? groupImageService.store(image) : null;
         String newBackgroundImage = (bgImage != null && !bgImage.isEmpty()) ? groupImageService.store(bgImage) : null;
 
-        if (newProfileImage != null) {
+        if (newProfileImage != null || Boolean.TRUE.equals(request.getRemoveProfileImage())) {
             String previous = group.getProfileImage();
             group.setProfileImage(newProfileImage);
             fileService.deleteFileAfterCommit(previous);
         }
-        if (newBackgroundImage != null) {
+        if (newBackgroundImage != null || Boolean.TRUE.equals(request.getRemoveBackgroundImage())) {
             String previous = group.getBackgroundImage();
             group.setBackgroundImage(newBackgroundImage);
             fileService.deleteFileAfterCommit(previous);
@@ -659,7 +673,7 @@ public class GroupService {
                 .id(group.getId())
                 .name(group.getName())
                 .description(group.getDescription())
-                .colorTheme(group.getColorTheme())
+                .colorTheme(displayColorTheme(group.getColorTheme()))
                 .createdById(group.getCreatedBy().getId())
                 .createdByNickname(group.getCreatedBy().getNickname())
                 .members(memberResponses)

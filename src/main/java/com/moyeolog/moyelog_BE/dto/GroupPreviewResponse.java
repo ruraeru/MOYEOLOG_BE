@@ -16,6 +16,7 @@ public class GroupPreviewResponse {
     private String description;
     private String colorTheme;
     private String profileImage;
+    private String backgroundImage;
     private int memberCount;
     private String ownerNickname;
     private boolean alreadyMember;

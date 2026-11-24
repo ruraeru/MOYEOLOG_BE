@@ -122,6 +122,17 @@ class GroupServiceTest {
     }
 
     @Test
+    @DisplayName("colorTheme 대소문자 무시, 응답에는 옛 값(null·hex·모르는 키)을 기본 색으로")
+    void colorThemeCaseAndDisplay() {
+        assertThat(GroupService.normalizeColorTheme(" Rose ", null)).isEqualTo("rose");
+        assertThat(GroupService.normalizeColorTheme("", null)).isNull();
+        assertThat(GroupService.displayColorTheme(null)).isEqualTo("indigo");
+        assertThat(GroupService.displayColorTheme("#ff0000")).isEqualTo("indigo");
+        assertThat(GroupService.displayColorTheme("EMERALD")).isEqualTo("emerald");
+        assertThat(GroupService.displayColorTheme("amber")).isEqualTo("amber");
+    }
+
+    @Test
     @DisplayName("모임 상세 조회 실패 - 비멤버는 403")
     void getGroup_Unauthorized() {
         UUID groupId = UUID.randomUUID();
@@ -181,7 +192,8 @@ class GroupServiceTest {
     void preview() {
         UUID groupId = UUID.randomUUID();
         User owner = User.builder().id(UUID.randomUUID()).nickname("방장").build();
-        Group group = Group.builder().id(groupId).name("캡스톤").colorTheme("rose").createdBy(owner).build();
+        Group group = Group.builder().id(groupId).name("캡스톤").colorTheme("rose")
+                .profileImage("/uploads/p.png").backgroundImage("/uploads/b.png").createdBy(owner).build();
         given(groupRepository.findByInviteCode("ABC123")).willReturn(Optional.of(group));
         given(groupMemberRepository.findByGroup(group)).willReturn(List.of(GroupMember.builder().group(group).user(owner).build()));
         given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(false);
@@ -192,6 +204,9 @@ class GroupServiceTest {
         assertThat(preview.getMemberCount()).isEqualTo(1);
         assertThat(preview.isAlreadyMember()).isFalse();
         assertThat(preview.isBlocked()).isFalse();
+        assertThat(preview.getColorTheme()).isEqualTo("rose");
+        assertThat(preview.getProfileImage()).isEqualTo("/uploads/p.png");
+        assertThat(preview.getBackgroundImage()).isEqualTo("/uploads/b.png");
 
         given(groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
         assertThat(groupService.previewByCode(userId, "abc123").isBlocked()).isTrue();
@@ -307,6 +322,120 @@ class GroupServiceTest {
         assertThatThrownBy(() -> groupService.updateGroup(userId, ownId, GroupRequest.builder().name("n").build(), good, bad))
                 .isInstanceOf(BadRequestException.class);
         verify(groupImageService, never()).store(any());
+    }
+
+    private Group groupWithImages(UUID groupId) {
+        Group group = ownedGroup(groupId);
+        group.setColorTheme("rose");
+        group.setProfileImage("/uploads/old-p.png");
+        group.setBackgroundImage("/uploads/old-b.png");
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        return group;
+    }
+
+    @Test
+    @DisplayName("모임 수정 - 새 사진으로 바꾸면 이전 파일은 커밋 뒤 삭제, 응답에 새 경로")
+    void updateGroup_ReplaceImages() {
+        UUID groupId = UUID.randomUUID();
+        groupWithImages(groupId);
+        var image = new org.springframework.mock.web.MockMultipartFile("image", new byte[]{1});
+        var bg = new org.springframework.mock.web.MockMultipartFile("bgImage", new byte[]{2});
+        given(groupImageService.store(image)).willReturn("/uploads/new-p.png");
+        given(groupImageService.store(bg)).willReturn("/uploads/new-b.png");
+
+        GroupResponse response = groupService.updateGroup(userId, groupId,
+                GroupRequest.builder().name("모임").colorTheme("emerald").build(), image, bg);
+
+        assertThat(response.getProfileImage()).isEqualTo("/uploads/new-p.png");
+        assertThat(response.getBackgroundImage()).isEqualTo("/uploads/new-b.png");
+        assertThat(response.getColorTheme()).isEqualTo("emerald");
+        verify(fileService).deleteFileAfterCommit("/uploads/old-p.png");
+        verify(fileService).deleteFileAfterCommit("/uploads/old-b.png");
+    }
+
+    @Test
+    @DisplayName("모임 수정 - remove 플래그로 사진을 지우고 이전 파일은 커밋 뒤 삭제, 플래그 없으면 그대로")
+    void updateGroup_RemoveImages() {
+        UUID groupId = UUID.randomUUID();
+        groupWithImages(groupId);
+
+        GroupResponse kept = groupService.updateGroup(userId, groupId,
+                GroupRequest.builder().name("모임").removeProfileImage(false).build(), null, null);
+        assertThat(kept.getProfileImage()).isEqualTo("/uploads/old-p.png");
+        assertThat(kept.getBackgroundImage()).isEqualTo("/uploads/old-b.png");
+        assertThat(kept.getColorTheme()).isEqualTo("rose");
+        verify(fileService, never()).deleteFileAfterCommit(any());
+
+        GroupResponse onlyProfile = groupService.updateGroup(userId, groupId,
+                GroupRequest.builder().name("모임").removeProfileImage(true).build(), null, null);
+        assertThat(onlyProfile.getProfileImage()).isNull();
+        assertThat(onlyProfile.getBackgroundImage()).isEqualTo("/uploads/old-b.png");
+        verify(fileService).deleteFileAfterCommit("/uploads/old-p.png");
+
+        GroupResponse both = groupService.updateGroup(userId, groupId,
+                GroupRequest.builder().name("모임").removeBackgroundImage(true).build(), null, null);
+        assertThat(both.getBackgroundImage()).isNull();
+        verify(fileService).deleteFileAfterCommit("/uploads/old-b.png");
+    }
+
+    @Test
+    @DisplayName("모임 수정 - 같은 요청에 remove 와 새 파일이 같이 오면 새 파일이 이긴다")
+    void updateGroup_NewFileWinsOverRemove() {
+        UUID groupId = UUID.randomUUID();
+        groupWithImages(groupId);
+        var bg = new org.springframework.mock.web.MockMultipartFile("bgImage", new byte[]{2});
+        given(groupImageService.store(bg)).willReturn("/uploads/new-b.png");
+
+        GroupResponse response = groupService.updateGroup(userId, groupId, GroupRequest.builder().name("모임")
+                .removeProfileImage(true).removeBackgroundImage(true).build(), null, bg);
+
+        assertThat(response.getProfileImage()).isNull();
+        assertThat(response.getBackgroundImage()).isEqualTo("/uploads/new-b.png");
+        verify(fileService).deleteFileAfterCommit("/uploads/old-p.png");
+        verify(fileService).deleteFileAfterCommit("/uploads/old-b.png");
+    }
+
+    @Test
+    @DisplayName("모임 수정 - 방장이 아니면 remove 플래그도 403, 잘못된 색이면 400 이고 아무 것도 바뀌지 않는다")
+    void updateGroup_RejectsWithoutChanges() {
+        UUID groupId = UUID.randomUUID();
+        Group group = ownedGroup(groupId);
+        group.setProfileImage("/uploads/old-p.png");
+        group.setColorTheme("rose");
+        group.setCreatedBy(User.builder().id(UUID.randomUUID()).build());
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        assertThatThrownBy(() -> groupService.updateGroup(userId, groupId,
+                GroupRequest.builder().name("x").removeProfileImage(true).build(), null, null))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        assertThat(group.getProfileImage()).isEqualTo("/uploads/old-p.png");
+
+        UUID ownId = UUID.randomUUID();
+        Group own = groupWithImages(ownId);
+        assertThatThrownBy(() -> groupService.updateGroup(userId, ownId, GroupRequest.builder().name("새 이름")
+                .colorTheme("#123456").removeProfileImage(true).build(), null, null))
+                .isInstanceOf(BadRequestException.class);
+        assertThat(own.getName()).isEqualTo("모임");
+        assertThat(own.getColorTheme()).isEqualTo("rose");
+        assertThat(own.getProfileImage()).isEqualTo("/uploads/old-p.png");
+        verify(fileService, never()).deleteFileAfterCommit(any());
+    }
+
+    @Test
+    @DisplayName("내 모임 목록·상세 응답에 사진·색이 빠짐없이 온다")
+    void myGroupsAndDetailIncludeIdentity() {
+        UUID groupId = UUID.randomUUID();
+        Group group = groupWithImages(groupId);
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        GroupMember membership = GroupMember.builder().group(group).user(user).build();
+        given(groupMemberRepository.findByUser(user)).willReturn(List.of(membership));
+        given(groupMemberRepository.findByGroup(group)).willReturn(List.of(membership));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+
+        for (GroupResponse r : List.of(groupService.getMyGroups(userId).get(0), groupService.getGroup(userId, groupId))) {
+            assertThat(r.getProfileImage()).isEqualTo("/uploads/old-p.png");
+            assertThat(r.getBackgroundImage()).isEqualTo("/uploads/old-b.png");
+            assertThat(r.getColorTheme()).isEqualTo("rose");
+        }
     }
 
     // ─── 초대 ─────────────────────────────────────────────────────
