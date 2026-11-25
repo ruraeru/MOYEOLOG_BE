@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.service;
 
+import com.moyeolog.moyelog_BE.dto.LinkPreviewResponse;
 import com.moyeolog.moyelog_BE.dto.UserMeResponse;
 import com.moyeolog.moyelog_BE.dto.UserProfileResponse;
 import com.moyeolog.moyelog_BE.dto.UserUpdateRequest;
@@ -149,17 +150,26 @@ public class UserService {
     /** 친구 초대 링크용. 대소문자를 무시하되, 정확히 같은 값이 있으면 그것을 고른다. */
     @Transactional(readOnly = true)
     public UserProfileResponse getProfileByCustomId(UUID viewerId, String customId) {
+        return toProfile(viewerId, findByCustomIdOrThrow(customId));
+    }
+
+    /** 친구 초대 링크를 공유했을 때 미리보기에 쓸 정보. 로그인 없이 보이므로 닉네임만 준다. */
+    @Transactional(readOnly = true)
+    public LinkPreviewResponse linkPreviewByCustomId(String customId) {
+        return new LinkPreviewResponse(findByCustomIdOrThrow(customId).getNickname(), null, null, null);
+    }
+
+    private User findByCustomIdOrThrow(String customId) {
         String code = customId == null ? "" : customId.trim();
         if (code.isEmpty() || code.length() > CUSTOM_ID_MAX) {
             throw new ResourceNotFoundException(USER_NOT_FOUND);
         }
         List<User> matches = userRepository.findAllByCustomIdIgnoreCase(code);
-        User target = matches.stream()
+        return matches.stream()
                 .filter(u -> code.equals(u.getCustomId()))
                 .findFirst()
                 .or(() -> matches.stream().findFirst())
                 .orElseThrow(() -> new ResourceNotFoundException(USER_NOT_FOUND));
-        return toProfile(viewerId, target);
     }
 
     private UserProfileResponse toProfile(UUID viewerId, User target) {

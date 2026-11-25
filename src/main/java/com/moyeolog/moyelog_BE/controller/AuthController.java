@@ -5,9 +5,13 @@ import com.moyeolog.moyelog_BE.dto.AuthLoginRequest;
 import com.moyeolog.moyelog_BE.dto.AuthLogoutRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncResponse;
+import com.moyeolog.moyelog_BE.dto.LinkPreviewResponse;
+import com.moyeolog.moyelog_BE.exception.BadRequestException;
 import com.moyeolog.moyelog_BE.exception.InvalidTokenException;
 import com.moyeolog.moyelog_BE.security.TokenHasher;
 import com.moyeolog.moyelog_BE.service.AuthService;
+import com.moyeolog.moyelog_BE.service.GroupService;
+import com.moyeolog.moyelog_BE.service.UserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,6 +29,8 @@ public class AuthController {
     public static final String INTERNAL_SECRET_HEADER = "X-Internal-Secret";
 
     private final AuthService authService;
+    private final GroupService groupService;
+    private final UserService userService;
 
     /**
      * 프론트엔드 서버(NextAuth)만 알고 있는 공유 비밀값. 환경변수 INTERNAL_API_SECRET.
@@ -86,6 +92,24 @@ public class AuthController {
             authService.logout(request.getRefreshToken(), request.getAccessToken());
         }
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * 초대 링크를 공유했을 때의 미리보기 정보 (서버 간 호출). 메신저·SNS 의 미리보기 수집기는 로그인하지 않으므로
+     * 프론트 서버가 페이지의 Open Graph 메타를 만들 때 부른다. type = group(code = 초대 코드) | friend(code = customId).
+     * /api/auth/** 는 nginx 가 프론트로 보내 외부에서 닿지 않고, 내부 비밀값이 없으면 401 이다.
+     */
+    @GetMapping("/link-preview")
+    public ResponseEntity<LinkPreviewResponse> linkPreview(
+            @RequestHeader(value = INTERNAL_SECRET_HEADER, required = false) String internalSecret,
+            @RequestParam String type,
+            @RequestParam String code) {
+        requireInternalSecret(internalSecret, "link-preview");
+        return switch (type) {
+            case "group" -> ResponseEntity.ok(groupService.linkPreviewByCode(code));
+            case "friend" -> ResponseEntity.ok(userService.linkPreviewByCustomId(code));
+            default -> throw new BadRequestException("알 수 없는 링크 종류예요.");
+        };
     }
 
     private void requireInternalSecret(String internalSecret, String action) {
