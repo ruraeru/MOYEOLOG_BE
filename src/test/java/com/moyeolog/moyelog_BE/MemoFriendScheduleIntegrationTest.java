@@ -381,6 +381,26 @@ class MemoFriendScheduleIntegrationTest {
     // ─── 일정 ───────────────────────────────────────────────────────
 
     @Test
+    @DisplayName("일정: 좌표는 장소가 있을 때만 저장하고 범위를 벗어나면 400")
+    void schedules_keepCoordinatesOnlyWithPlace() throws Exception {
+        Session owner = login("coord");
+        String id = createSchedule(owner, Map.of("title", "산책", "location", "서울숲",
+                "latitude", 37.5444, "longitude", 127.0374));
+        assertThat(scheduleOf(owner, id).get("latitude").asDouble()).isEqualTo(37.5444);
+        assertThat(scheduleOf(owner, id).get("longitude").asDouble()).isEqualTo(127.0374);
+
+        // 장소를 지우면 좌표도 지운다
+        mockMvc.perform(jsonBody(auth(put("/api/schedules/" + id), owner), Map.of("title", "산책",
+                "latitude", 37.5444, "longitude", 127.0374,
+                "startTime", "2026-12-01T10:00:00", "endTime", "2026-12-01T11:00:00"))).andExpect(status().isOk());
+        assertThat(scheduleOf(owner, id).get("latitude").isNull()).isTrue();
+
+        mockMvc.perform(jsonBody(auth(post("/api/schedules"), owner), Map.of("title", "산책", "location", "어딘가",
+                "latitude", 137.5, "longitude", 127.0,
+                "startTime", "2026-12-01T10:00:00", "endTime", "2026-12-01T11:00:00"))).andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("일정: 동시 삭제는 1건 204·나머지 404, 모임을 나간 작성자는 모임 일정 수정 403·삭제 가능")
     void schedules_concurrentDeleteAndFormerMember() throws Exception {
         Session owner = login("sowner");
