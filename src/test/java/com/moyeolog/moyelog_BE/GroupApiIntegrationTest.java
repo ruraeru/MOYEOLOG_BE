@@ -214,6 +214,43 @@ class GroupApiIntegrationTest {
     }
 
     @Test
+    @DisplayName("링크 미리보기: 내부 비밀값이 있어야 하고 이름·인원만 준다")
+    void linkPreview() throws Exception {
+        Session owner = login("미리보기방장");
+        JsonNode group = json(mockMvc.perform(jsonBody(auth(post("/api/groups"), owner),
+                Map.of("name", "주말 등산", "description", "한 달에 한 번"))).andExpect(status().isOk()).andReturn());
+        String code = group.path("inviteCode").asText();
+
+        // 비밀값 없이는 401 (로그인 토큰이 있어도 안 된다)
+        mockMvc.perform(get("/api/auth/link-preview").param("type", "group").param("code", code))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(auth(get("/api/auth/link-preview"), owner).param("type", "group").param("code", code))
+                .andExpect(status().isUnauthorized());
+
+        JsonNode g = json(mockMvc.perform(get("/api/auth/link-preview").header(SECRET_HEADER, SECRET)
+                .param("type", "group").param("code", code)).andExpect(status().isOk()).andReturn());
+        assertThat(g.path("name").asText()).isEqualTo("주말 등산");
+        assertThat(g.path("description").asText()).isEqualTo("한 달에 한 번");
+        assertThat(g.path("memberCount").asInt()).isEqualTo(1);
+        assertThat(g.path("ownerNickname").asText()).isEqualTo("미리보기방장");
+        // 모임 ID·초대 코드·사진 같은 것은 싣지 않는다
+        assertThat(g.has("id")).isFalse();
+        assertThat(g.has("inviteCode")).isFalse();
+
+        JsonNode f = json(mockMvc.perform(get("/api/auth/link-preview").header(SECRET_HEADER, SECRET)
+                .param("type", "friend").param("code", owner.customId())).andExpect(status().isOk()).andReturn());
+        assertThat(f.path("name").asText()).isEqualTo("미리보기방장");
+        assertThat(f.path("memberCount").isNull()).isTrue();
+
+        mockMvc.perform(get("/api/auth/link-preview").header(SECRET_HEADER, SECRET)
+                .param("type", "group").param("code", "NOPE-0000")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/auth/link-preview").header(SECRET_HEADER, SECRET)
+                .param("type", "friend").param("code", "no-such-user-id")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/auth/link-preview").header(SECRET_HEADER, SECRET)
+                .param("type", "memo").param("code", code)).andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("초대 코드: 미리 보기 → 가입 {groupId} → 다시 가입 409(groupId), 먼저 받은 초대 정리, 강퇴 후 403")
     void previewAndJoin() throws Exception {
         Session owner = login("pj-owner");

@@ -170,6 +170,14 @@ public class GroupService {
                 .build();
     }
 
+    /** 초대 링크를 공유했을 때 미리보기에 쓸 정보. 로그인 없이 보이므로 이름·소개·인원·방장 닉네임만 준다. */
+    @Transactional(readOnly = true)
+    public LinkPreviewResponse linkPreviewByCode(String inviteCode) {
+        Group group = findGroupByCode(inviteCode);
+        return new LinkPreviewResponse(group.getName(), group.getDescription(),
+                distinctMembers(group).size(), group.getCreatedBy().getNickname());
+    }
+
     @Transactional
     public GroupJoinResponse joinGroupByCode(UUID userId, String inviteCode) {
         if (inviteCode == null || inviteCode.isBlank()) {
