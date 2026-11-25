@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public interface ScheduleDepartureRepository extends JpaRepository<ScheduleDeparture, UUID> {
@@ -18,6 +19,10 @@ public interface ScheduleDepartureRepository extends JpaRepository<ScheduleDepar
 
     /** 다른 일정에 마지막으로 적은 출발지 ('지난번 출발지 쓰기'용) */
     Optional<ScheduleDeparture> findFirstByUser_IdAndSchedule_IdNotOrderByUpdatedAtDesc(UUID userId, UUID scheduleId);
+
+    /** 이 사용자가 출발지를 적어 둔 일정들 (일정 목록의 '출발지 미입력' 표시용) */
+    @Query("SELECT d.schedule.id FROM ScheduleDeparture d WHERE d.user.id = :userId")
+    Set<UUID> findScheduleIdsByUserId(@Param("userId") UUID userId);
 
     @Modifying
     @Query("DELETE FROM ScheduleDeparture d WHERE d.user.id = :userId")

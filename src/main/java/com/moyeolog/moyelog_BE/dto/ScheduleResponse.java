@@ -26,6 +26,8 @@ public class ScheduleResponse {
     private List<MemoResponse> taggedMemos;
     private List<ParticipantResponse> participants;
     private LocalDateTime createdAt;
+    /** 보는 사람이 이 일정에 출발지를 적어야 하는데 아직 안 적었는지 (여럿이 만나고, 장소가 비었고, 끝나지 않은 일정) */
+    private boolean departureNeeded;
 
     @Getter
     @Setter
