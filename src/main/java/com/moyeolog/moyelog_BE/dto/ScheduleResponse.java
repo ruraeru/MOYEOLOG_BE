@@ -18,6 +18,8 @@ public class ScheduleResponse {
     private LocalDateTime startTime;
     private LocalDateTime endTime;
     private String location;
+    private Double latitude;
+    private Double longitude;
     private UUID authorId;
     private String authorNickname;
     private UUID groupId;

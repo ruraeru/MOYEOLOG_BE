@@ -34,6 +34,11 @@ public class Schedule {
 
     private String location;
 
+    /** 지도에서 고른 장소의 좌표(날씨 조회용). 직접 입력한 장소·예전 일정은 NULL. */
+    private Double latitude;
+
+    private Double longitude;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "author_id", nullable = false)
     private User author;
@@ -63,12 +68,14 @@ public class Schedule {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    public void update(String title, String description, LocalDateTime startTime, LocalDateTime endTime, String location, UUID groupId, List<Memo> taggedMemos, List<User> participants) {
+    public void update(String title, String description, LocalDateTime startTime, LocalDateTime endTime, String location, Double latitude, Double longitude, UUID groupId, List<Memo> taggedMemos, List<User> participants) {
         this.title = title;
         this.description = description;
         this.startTime = startTime;
         this.endTime = endTime;
         this.location = location;
+        this.latitude = latitude;
+        this.longitude = longitude;
         this.groupId = groupId;
         this.taggedMemos = taggedMemos;
         this.participants = participants;

@@ -63,6 +63,8 @@ public class ScheduleService {
                 .startTime(request.getStartTime())
                 .endTime(request.getEndTime())
                 .location(request.getLocation())
+                .latitude(latitudeOf(request))
+                .longitude(longitudeOf(request))
                 .author(author)
                 .groupId(request.getGroupId())
                 .taggedMemos(taggedMemos)
@@ -156,6 +158,8 @@ public class ScheduleService {
                 request.getStartTime(),
                 request.getEndTime(),
                 request.getLocation(),
+                latitudeOf(request),
+                longitudeOf(request),
                 newGroupId,
                 taggedMemos,
                 participants
@@ -204,6 +208,20 @@ public class ScheduleService {
             eventPublisher.publishEvent(new NotificationEvent(participant.getId(), author.getId(),
                     NotificationType.SCHEDULE_PARTICIPANT, message, "/schedule/" + schedule.getId()));
         }
+    }
+
+    /** 좌표는 장소 이름과 위도·경도가 모두 있을 때만 남긴다(장소를 지우거나 한쪽만 오면 버림). */
+    private static Double latitudeOf(ScheduleRequest request) {
+        return hasCoordinates(request) ? request.getLatitude() : null;
+    }
+
+    private static Double longitudeOf(ScheduleRequest request) {
+        return hasCoordinates(request) ? request.getLongitude() : null;
+    }
+
+    private static boolean hasCoordinates(ScheduleRequest request) {
+        return request.getLocation() != null && !request.getLocation().isBlank()
+                && request.getLatitude() != null && request.getLongitude() != null;
     }
 
     private void validateTimes(ScheduleRequest request) {
@@ -317,6 +335,8 @@ public class ScheduleService {
                 .startTime(schedule.getStartTime())
                 .endTime(schedule.getEndTime())
                 .location(schedule.getLocation())
+                .latitude(schedule.getLatitude())
+                .longitude(schedule.getLongitude())
                 .authorId(schedule.getAuthor().getId())
                 .authorNickname(schedule.getAuthor().getNickname())
                 .groupId(schedule.getGroupId())
