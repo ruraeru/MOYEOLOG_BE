@@ -118,13 +118,25 @@ public class MessageService {
         messageRepository.markRead(userId, friendId, LocalDateTime.now());
     }
 
+    /**
+     * 대화 지우기: 지금까지 주고받은 메시지를 내 쪽에서만 안 보이게 한다. 상대 쪽에는 그대로 남는다.
+     * 두 사람이 모두 지운 메시지는 행을 없앤다. 그 뒤에 온 메시지는 다시 보인다.
+     */
+    @Transactional
+    public void deleteConversation(UUID userId, UUID friendId) {
+        findUser(friendId);
+        messageRepository.hideSent(userId, friendId);
+        messageRepository.hideReceived(userId, friendId, LocalDateTime.now());
+        messageRepository.deleteHiddenByBoth(userId, friendId);
+    }
+
     /** 헤더 배지용. 알림 설정에서 메시지를 끄면 0 (메시지 자체는 그대로). */
     @Transactional(readOnly = true)
     public long getUnreadCount(UUID userId) {
         if (!notificationService.getPreferenceEntity(userId).isMessage()) {
             return 0;
         }
-        return messageRepository.countByRecipient_IdAndReadAtIsNull(userId);
+        return messageRepository.countUnread(userId);
     }
 
     /** 회원 탈퇴 직전(같은 트랜잭션): 내가 보내거나 받은 메시지를 지운다. */
