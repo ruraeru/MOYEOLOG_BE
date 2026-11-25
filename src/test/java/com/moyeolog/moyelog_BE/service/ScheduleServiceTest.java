@@ -33,6 +33,7 @@ class ScheduleServiceTest {
     @Mock private GroupRepository groupRepository;
     @Mock private FriendRepository friendRepository;
     @Mock private MemoShareRepository memoShareRepository;
+    @Mock private com.moyeolog.moyelog_BE.midpoint.ScheduleDepartureRepository scheduleDepartureRepository;
     @Mock private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private ScheduleService scheduleService;

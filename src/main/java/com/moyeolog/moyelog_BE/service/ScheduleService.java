@@ -11,6 +11,7 @@ import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
+import com.moyeolog.moyelog_BE.midpoint.ScheduleDepartureRepository;
 import com.moyeolog.moyelog_BE.repository.FriendRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.GroupRepository;
@@ -25,10 +26,13 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -44,6 +48,7 @@ public class ScheduleService {
     private final GroupRepository groupRepository;
     private final FriendRepository friendRepository;
     private final MemoShareRepository memoShareRepository;
+    private final ScheduleDepartureRepository scheduleDepartureRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
@@ -92,8 +97,9 @@ public class ScheduleService {
             schedules = scheduleRepository.findByUserOrGroupIds(user, groupIds);
         }
 
+        DepartureLookup lookup = new DepartureLookup(userId);
         return schedules.stream()
-                .map(schedule -> convertToResponse(schedule, userId))
+                .map(schedule -> convertToResponse(schedule, userId, lookup))
                 .collect(Collectors.toList());
     }
 
@@ -101,8 +107,9 @@ public class ScheduleService {
     @Transactional(readOnly = true)
     public List<ScheduleResponse> getGroupSchedules(UUID userId, UUID groupId) {
         requireGroupMember(groupId, userId);
+        DepartureLookup lookup = new DepartureLookup(userId);
         return scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId).stream()
-                .map(schedule -> convertToResponse(schedule, userId))
+                .map(schedule -> convertToResponse(schedule, userId, lookup))
                 .collect(Collectors.toList());
     }
 
@@ -201,6 +208,10 @@ public class ScheduleService {
             title = CodePointSizeValidator.truncate(title, 30) + "…";
         }
         String message = author.getNickname() + "님이 '" + title + "' 일정에 참여자로 추가했어요.";
+        // 장소가 아직 없으면 중간 지점을 찾을 수 있게 출발지를 적어 달라고 덧붙인다.
+        if (isBlank(schedule.getLocation())) {
+            message += " 출발지를 입력해 주세요!";
+        }
         for (User participant : schedule.getParticipants()) {
             if (participant.getId().equals(author.getId()) || previousParticipantIds.contains(participant.getId())) {
                 continue;
@@ -304,8 +315,54 @@ public class ScheduleService {
                 && groupMemberRepository.existsByGroup_IdAndUser_Id(memo.getGroupId(), userId);
     }
 
-    /** 연결된 메모는 요청한 사용자가 열 수 있는 것만 담는다 (비공개 메모 제목 노출 방지). */
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /** 한 번의 목록 응답 안에서 '출발지 미입력' 판단에 쓰는 조회를 모아 둔다 (일정마다 다시 묻지 않게). */
+    private final class DepartureLookup {
+        private final UUID viewerId;
+        private Set<UUID> entered;
+        private final Map<UUID, Long> groupSizes = new HashMap<>();
+        private final Map<UUID, Boolean> memberships = new HashMap<>();
+        private final LocalDateTime now = LocalDateTime.now();
+
+        private DepartureLookup(UUID viewerId) {
+            this.viewerId = viewerId;
+        }
+
+        /** 여럿이 만나고, 장소가 비었고, 아직 끝나지 않았고, 내가 대상인데 출발지를 안 적은 일정 */
+        private boolean needed(Schedule schedule) {
+            if (!isBlank(schedule.getLocation())) return false;
+            if (schedule.getEndTime() != null && schedule.getEndTime().isBefore(now)) return false;
+
+            UUID groupId = schedule.getGroupId();
+            if (groupId != null) {
+                if (!memberships.computeIfAbsent(groupId,
+                        id -> groupMemberRepository.existsByGroup_IdAndUser_Id(id, viewerId))) return false;
+                if (groupSizes.computeIfAbsent(groupId, groupMemberRepository::countByGroup_Id) < 2) return false;
+            } else {
+                Set<UUID> people = new HashSet<>();
+                people.add(schedule.getAuthor().getId());
+                if (schedule.getParticipants() != null) {
+                    schedule.getParticipants().forEach(p -> people.add(p.getId()));
+                }
+                if (people.size() < 2 || !people.contains(viewerId)) return false;
+            }
+
+            if (entered == null) {
+                entered = scheduleDepartureRepository.findScheduleIdsByUserId(viewerId);
+            }
+            return !entered.contains(schedule.getId());
+        }
+    }
+
     private ScheduleResponse convertToResponse(Schedule schedule, UUID viewerId) {
+        return convertToResponse(schedule, viewerId, new DepartureLookup(viewerId));
+    }
+
+    /** 연결된 메모는 요청한 사용자가 열 수 있는 것만 담는다 (비공개 메모 제목 노출 방지). */
+    private ScheduleResponse convertToResponse(Schedule schedule, UUID viewerId, DepartureLookup lookup) {
         List<MemoResponse> memoResponses = new ArrayList<>();
         if (schedule.getTaggedMemos() != null) {
             memoResponses = schedule.getTaggedMemos().stream()
@@ -343,6 +400,7 @@ public class ScheduleService {
                 .taggedMemos(memoResponses)
                 .participants(participantResponses)
                 .createdAt(schedule.getCreatedAt())
+                .departureNeeded(lookup.needed(schedule))
                 .build();
     }
 }

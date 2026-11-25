@@ -225,4 +225,69 @@ class MidpointIntegrationTest {
                 Long.class, UUID.fromString(owner.userId()));
         assertThat(rows).isZero();
     }
+
+    private boolean departureNeeded(Session s, String scheduleId) throws Exception {
+        for (JsonNode n : json(mockMvc.perform(auth(get("/api/schedules"), s)).andReturn())) {
+            if (n.path("id").asText().equals(scheduleId)) return n.path("departureNeeded").asBoolean();
+        }
+        throw new AssertionError("일정이 목록에 없다");
+    }
+
+    private void makeFriends(Session a, Session b) throws Exception {
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isOk());
+        JsonNode requests = json(mockMvc.perform(auth(get("/api/friends/requests"), b))
+                .andExpect(status().isOk()).andReturn());
+        mockMvc.perform(auth(put("/api/friends/accept/" + requests.get(0).path("id").asText()), b))
+                .andExpect(status().isOk());
+    }
+
+    private String lastNotification(Session s) {
+        return jdbcTemplate.queryForObject(
+                "SELECT message FROM notifications WHERE recipient_id = ? ORDER BY created_at DESC LIMIT 1",
+                String.class, UUID.fromString(s.userId()));
+    }
+
+    @Test
+    @DisplayName("출발지 미입력 표시: 여럿이 만나고 장소가 빈 일정에서 아직 안 적은 사람에게만 true")
+    void departureNeeded_flag() throws Exception {
+        Session owner = login("방장"), member = login("멤버");
+        String groupId = createGroup(owner);
+        joinGroup(member, groupId, owner);
+
+        String open = createSchedule(owner, Map.of("groupId", groupId));
+        assertThat(departureNeeded(owner, open)).isTrue();
+        assertThat(departureNeeded(member, open)).isTrue();
+
+        // 적은 사람만 false
+        putDeparture(member, open, "홍대입구역", 37.5572, 126.9245);
+        assertThat(departureNeeded(member, open)).isFalse();
+        assertThat(departureNeeded(owner, open)).isTrue();
+
+        // 장소가 정해지면 모두 false
+        mockMvc.perform(jsonBody(auth(post(base(open) + "/confirm"), owner), Map.of("name", "합정역")))
+                .andExpect(status().isOk());
+        assertThat(departureNeeded(owner, open)).isFalse();
+
+        // 장소가 이미 있는 일정, 끝난 일정, 혼자인 일정은 false
+        assertThat(departureNeeded(member, createSchedule(owner, Map.of("groupId", groupId, "location", "강남역")))).isFalse();
+        assertThat(departureNeeded(member, createSchedule(owner, Map.of("groupId", groupId,
+                "startTime", "2020-01-01T10:00:00", "endTime", "2020-01-01T11:00:00")))).isFalse();
+        assertThat(departureNeeded(owner, createSchedule(owner, Map.of()))).isFalse();
+    }
+
+    @Test
+    @DisplayName("참여자 추가 알림: 장소가 비어 있으면 출발지를 적어 달라고 덧붙인다")
+    void participantNotification_asksDeparture() throws Exception {
+        Session author = login("작성자"), friend = login("친구");
+        makeFriends(author, friend);
+
+        String noPlace = createSchedule(author, Map.of("participantIds", java.util.List.of(friend.userId())));
+        assertThat(lastNotification(friend)).endsWith("일정에 참여자로 추가했어요. 출발지를 입력해 주세요!");
+        assertThat(departureNeeded(friend, noPlace)).isTrue();
+
+        createSchedule(author, Map.of("title", "장소 있는 일정", "location", "강남역",
+                "participantIds", java.util.List.of(friend.userId())));
+        assertThat(lastNotification(friend)).endsWith("'장소 있는 일정' 일정에 참여자로 추가했어요.");
+    }
 }
