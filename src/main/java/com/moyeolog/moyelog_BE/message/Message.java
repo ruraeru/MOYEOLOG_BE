@@ -3,6 +3,7 @@ package com.moyeolog.moyelog_BE.message;
 import com.moyeolog.moyelog_BE.entity.User;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.ColumnDefault;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -41,6 +42,18 @@ public class Message {
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    /** 보낸 사람이 대화를 지워서 보낸 사람 쪽에서는 안 보인다 (받는 사람 쪽에는 그대로) */
+    @Builder.Default
+    @ColumnDefault("false")
+    @Column(name = "hidden_by_sender", nullable = false)
+    private boolean hiddenBySender = false;
+
+    /** 받는 사람이 대화를 지워서 받는 사람 쪽에서는 안 보인다 */
+    @Builder.Default
+    @ColumnDefault("false")
+    @Column(name = "hidden_by_recipient", nullable = false)
+    private boolean hiddenByRecipient = false;
 
     @PrePersist
     protected void onCreate() {
