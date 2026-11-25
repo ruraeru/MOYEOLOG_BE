@@ -3,6 +3,8 @@ package com.moyeolog.moyelog_BE.dto;
 import tools.jackson.databind.annotation.JsonDeserialize;
 import com.moyeolog.moyelog_BE.config.LenientLocalDateTimeDeserializer;
 import com.moyeolog.moyelog_BE.validation.CodePointSize;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
@@ -36,6 +38,15 @@ public class ScheduleRequest {
     
     @CodePointSize(max = 255, message = "장소는 255자까지 쓸 수 있어요.")
     private String location;
+
+    // 지도에서 고른 장소의 좌표. 둘 다 있을 때만 저장한다.
+    @DecimalMin(value = "-90", message = "위도가 올바르지 않아요.")
+    @DecimalMax(value = "90", message = "위도가 올바르지 않아요.")
+    private Double latitude;
+
+    @DecimalMin(value = "-180", message = "경도가 올바르지 않아요.")
+    @DecimalMax(value = "180", message = "경도가 올바르지 않아요.")
+    private Double longitude;
     
     private UUID groupId;
     
