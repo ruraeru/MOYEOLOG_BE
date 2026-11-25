@@ -1,5 +1,7 @@
 package com.moyeolog.moyelog_BE.controller;
 
+import com.moyeolog.moyelog_BE.dto.AuthLinkKakaoRequest;
+import com.moyeolog.moyelog_BE.dto.AuthLoginRequest;
 import com.moyeolog.moyelog_BE.dto.AuthLogoutRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncRequest;
 import com.moyeolog.moyelog_BE.dto.AuthSyncResponse;
@@ -38,6 +40,36 @@ public class AuthController {
         requireInternalSecret(internalSecret, "sync");
         AuthSyncResponse response = authService.syncUser(request);
         log.info("Successfully synced user: {}", response.getUser().getId());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 이메일 + 비밀번호 로그인 (서버 간 호출, nginx 가 외부에서 막는다). 응답은 sync 와 같은 모양.
+     * 실패는 이유와 관계없이 같은 401 문구(계정 유무·잠금 여부를 드러내지 않는다).
+     */
+    @PostMapping("/login")
+    public ResponseEntity<AuthSyncResponse> login(
+            @RequestHeader(value = INTERNAL_SECRET_HEADER, required = false) String internalSecret,
+            @RequestBody(required = false) AuthLoginRequest request) {
+        requireInternalSecret(internalSecret, "login");
+        AuthSyncResponse response = request == null
+                ? authService.loginWithPassword(null, null, null)
+                : authService.loginWithPassword(request.getEmail(), request.getPassword(), request.getClientIp());
+        log.info("Password login: {}", response.getUser().getId());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 지금 로그인한 사용자(본문의 accessToken)에 카카오 계정을 연결한다 (서버 간 호출, nginx 가 외부에서 막는다).
+     * 다른 계정에 이미 연결된 카카오 계정이면 409.
+     */
+    @PostMapping("/link-kakao")
+    public ResponseEntity<AuthSyncResponse> linkKakao(
+            @RequestHeader(value = INTERNAL_SECRET_HEADER, required = false) String internalSecret,
+            @RequestBody(required = false) AuthLinkKakaoRequest request) {
+        requireInternalSecret(internalSecret, "link-kakao");
+        AuthSyncResponse response = authService.linkKakao(request);
+        log.info("Linked kakao account to user: {}", response.getUser().getId());
         return ResponseEntity.ok(response);
     }
 

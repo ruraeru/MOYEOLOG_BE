@@ -23,6 +23,12 @@ public class UserMeResponse {
     private String bio;
     private boolean emailVisible;
     private LocalDateTime createdAt;
+    /** 비밀번호 로그인을 쓸 수 있는지 */
+    private boolean hasPassword;
+    /** 카카오 계정이 연결돼 있는지 (kakaoId 자체는 내보내지 않는다) */
+    private boolean kakaoLinked;
+    /** email 의 소유가 확인됐는지 */
+    private boolean emailVerified;
 
     public static UserMeResponse from(User user) {
         return UserMeResponse.builder()
@@ -34,6 +40,9 @@ public class UserMeResponse {
                 .bio(user.getBio())
                 .emailVisible(user.isEmailVisible())
                 .createdAt(user.getCreatedAt())
+                .hasPassword(user.getPasswordHash() != null)
+                .kakaoLinked(user.getKakaoId() != null)
+                .emailVerified(user.getEmail() != null && user.getEmailVerifiedAt() != null)
                 .build();
     }
 }

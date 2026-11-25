@@ -25,9 +25,32 @@ public class User {
     @Column(name = "custom_id", unique = true, length = 8)
     private String customId;
 
+    /** 이메일로만 가입한 계정은 NULL (카카오를 아직 연결하지 않음). */
     @JsonIgnore
-    @Column(name = "kakao_id", unique = true, nullable = false)
+    @Column(name = "kakao_id", unique = true)
     private String kakaoId;
+
+    /** BCrypt 해시. NULL 이면 비밀번호 로그인을 쓸 수 없는 계정(카카오로만 가입). */
+    @JsonIgnore
+    @Column(name = "password_hash", length = 100)
+    private String passwordHash;
+
+    /** email 의 소유가 확인된 시각(인증 메일 또는 카카오의 '인증됨'). NULL 이면 확인되지 않은 이메일. */
+    @JsonIgnore
+    @Column(name = "email_verified_at")
+    private LocalDateTime emailVerifiedAt;
+
+    /** 연속으로 틀린 비밀번호 횟수. 로그인에 성공하면 0. */
+    @JsonIgnore
+    @Builder.Default
+    @ColumnDefault("0")
+    @Column(name = "failed_login_count", nullable = false)
+    private int failedLoginCount = 0;
+
+    /** 이 시각까지 비밀번호 로그인을 받지 않는다. */
+    @JsonIgnore
+    @Column(name = "login_locked_until")
+    private LocalDateTime loginLockedUntil;
 
     /**
      * 카카오 계정이 이 사용자에 연결(가입·로그인·이메일 연결)된 시각.
@@ -36,6 +59,14 @@ public class User {
     @JsonIgnore
     @Column(name = "kakao_linked_at")
     private LocalDateTime kakaoLinkedAt;
+
+    /**
+     * 마지막으로 카카오 로그인(sync)·카카오 연결(link-kakao)에 성공한 시각.
+     * 비밀번호가 없는 계정이 로그인 방법을 바꿀 때 '방금 카카오로 로그인했는지'를 이것으로 확인한다.
+     */
+    @JsonIgnore
+    @Column(name = "last_kakao_login_at")
+    private LocalDateTime lastKakaoLoginAt;
 
     /** 이 시각(초 단위) 이전에 발급된 액세스 토큰은 거부한다 (모든 기기 로그아웃). */
     @JsonIgnore

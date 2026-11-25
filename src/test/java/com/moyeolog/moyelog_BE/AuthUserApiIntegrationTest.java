@@ -302,6 +302,9 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.customId").value(s.customId()))
                 .andExpect(jsonPath("$.emailVisible").value(false))
                 .andExpect(jsonPath("$.createdAt").isString())
+                .andExpect(jsonPath("$.hasPassword").value(false))
+                .andExpect(jsonPath("$.kakaoLinked").value(true))
+                .andExpect(jsonPath("$.emailVerified").value(false))
                 .andExpect(jsonPath("$.kakaoId").doesNotExist());
 
         mockMvc.perform(auth(putMe(Map.of("nickname", "원래닉", "bio", "원래 소개")), s)).andExpect(status().isOk());
