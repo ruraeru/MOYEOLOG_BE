@@ -23,6 +23,9 @@ public interface GroupMemberRepository extends JpaRepository<GroupMember, UUID> 
 
     long countByGroup_Id(UUID groupId);
 
+    @Query("SELECT m.user.id FROM GroupMember m WHERE m.group.id = :groupId")
+    List<UUID> findUserIdsByGroupId(@Param("groupId") UUID groupId);
+
     /** 가입 순서대로 (방장 이양 대상 찾기용) */
     List<GroupMember> findAllByGroup_IdOrderByJoinedAtAsc(UUID groupId);
 

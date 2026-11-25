@@ -74,6 +74,11 @@ public class Schedule {
         this.participants = participants;
     }
 
+    /** 중간 지점 찾기에서 고른 장소를 일정 장소로 적습니다. */
+    public void changeLocation(String location) {
+        this.location = location;
+    }
+
     /** 그룹이 삭제될 때 그룹 일정을 작성자의 개인 일정으로 되돌립니다. */
     public void detachFromGroup() {
         this.groupId = null;
