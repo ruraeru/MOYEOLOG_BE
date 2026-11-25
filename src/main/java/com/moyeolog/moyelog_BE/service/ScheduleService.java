@@ -331,8 +331,8 @@ public class ScheduleService {
             this.viewerId = viewerId;
         }
 
-        /** 여럿이 만나고, 장소가 비었고, 아직 끝나지 않았고, 내가 대상인데 출발지를 안 적은 일정 */
-        private boolean needed(Schedule schedule) {
+        /** 여럿이 만나고, 장소가 비었고, 아직 끝나지 않았고, 내가 대상인 일정 (중간 지점을 아직 찾는 중) */
+        private boolean open(Schedule schedule) {
             if (!isBlank(schedule.getLocation())) return false;
             if (schedule.getEndTime() != null && schedule.getEndTime().isBefore(now)) return false;
 
@@ -349,11 +349,21 @@ public class ScheduleService {
                 }
                 if (people.size() < 2 || !people.contains(viewerId)) return false;
             }
+            return true;
+        }
 
+        /** 찾는 중인 일정인데 내가 출발지를 안 적었다 */
+        private boolean departureNeeded(Schedule schedule) {
+            if (!open(schedule)) return false;
             if (entered == null) {
                 entered = scheduleDepartureRepository.findScheduleIdsByUserId(viewerId);
             }
             return !entered.contains(schedule.getId());
+        }
+
+        /** 찾는 중인 일정인데 내가 만든 일정이다 (장소를 정할 사람이 나) */
+        private boolean placeNeeded(Schedule schedule) {
+            return schedule.getAuthor().getId().equals(viewerId) && open(schedule);
         }
     }
 
@@ -400,7 +410,8 @@ public class ScheduleService {
                 .taggedMemos(memoResponses)
                 .participants(participantResponses)
                 .createdAt(schedule.getCreatedAt())
-                .departureNeeded(lookup.needed(schedule))
+                .departureNeeded(lookup.departureNeeded(schedule))
+                .placeNeeded(lookup.placeNeeded(schedule))
                 .build();
     }
 }
