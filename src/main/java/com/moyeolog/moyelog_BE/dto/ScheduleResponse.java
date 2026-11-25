@@ -28,6 +28,8 @@ public class ScheduleResponse {
     private LocalDateTime createdAt;
     /** 보는 사람이 이 일정에 출발지를 적어야 하는데 아직 안 적었는지 (여럿이 만나고, 장소가 비었고, 끝나지 않은 일정) */
     private boolean departureNeeded;
+    /** 보는 사람이 이 일정을 만들었고 아직 장소를 정하지 않았는지 (여럿이 만나고, 끝나지 않은 일정) */
+    private boolean placeNeeded;
 
     @Getter
     @Setter

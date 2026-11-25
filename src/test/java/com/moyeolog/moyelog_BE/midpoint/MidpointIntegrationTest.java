@@ -226,11 +226,19 @@ class MidpointIntegrationTest {
         assertThat(rows).isZero();
     }
 
-    private boolean departureNeeded(Session s, String scheduleId) throws Exception {
+    private boolean flag(Session s, String scheduleId, String name) throws Exception {
         for (JsonNode n : json(mockMvc.perform(auth(get("/api/schedules"), s)).andReturn())) {
-            if (n.path("id").asText().equals(scheduleId)) return n.path("departureNeeded").asBoolean();
+            if (n.path("id").asText().equals(scheduleId)) return n.path(name).asBoolean();
         }
         throw new AssertionError("일정이 목록에 없다");
+    }
+
+    private boolean departureNeeded(Session s, String scheduleId) throws Exception {
+        return flag(s, scheduleId, "departureNeeded");
+    }
+
+    private boolean placeNeeded(Session s, String scheduleId) throws Exception {
+        return flag(s, scheduleId, "placeNeeded");
     }
 
     private void makeFriends(Session a, Session b) throws Exception {
@@ -264,10 +272,20 @@ class MidpointIntegrationTest {
         assertThat(departureNeeded(member, open)).isFalse();
         assertThat(departureNeeded(owner, open)).isTrue();
 
+        // 만든 사람은 자기 출발지를 적어도 장소를 정할 때까지 '장소 미정'
+        assertThat(placeNeeded(owner, open)).isTrue();
+        assertThat(placeNeeded(member, open)).isFalse();
+        putDeparture(owner, open, "강남역", 37.4979, 127.0276);
+        assertThat(departureNeeded(owner, open)).isFalse();
+        assertThat(placeNeeded(owner, open)).isTrue();
+
         // 장소가 정해지면 모두 false
         mockMvc.perform(jsonBody(auth(post(base(open) + "/confirm"), owner), Map.of("name", "합정역")))
                 .andExpect(status().isOk());
         assertThat(departureNeeded(owner, open)).isFalse();
+        assertThat(placeNeeded(owner, open)).isFalse();
+        // 혼자인 일정은 장소가 없어도 표시하지 않는다
+        assertThat(placeNeeded(owner, createSchedule(owner, Map.of()))).isFalse();
 
         // 장소가 이미 있는 일정, 끝난 일정, 혼자인 일정은 false
         assertThat(departureNeeded(member, createSchedule(owner, Map.of("groupId", groupId, "location", "강남역")))).isFalse();
