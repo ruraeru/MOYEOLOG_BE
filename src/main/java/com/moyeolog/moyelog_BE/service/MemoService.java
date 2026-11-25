@@ -5,6 +5,10 @@ import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
 import com.moyeolog.moyelog_BE.entity.*;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.ChangeEvents;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
+import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
@@ -104,6 +108,7 @@ public class MemoService {
             }
         }
         ConcurrentUpdates.flush(memoShareRepository::flush);
+        audience(memo).publish(eventPublisher);
 
         String message = memo.getAuthor().getNickname() + "님이 '" + shortTitle(memo.getTitle()) + "' 메모를 공유했어요.";
         for (User friend : newlyShared) {
@@ -121,6 +126,8 @@ public class MemoService {
             throw new UnauthorizedAccessException("메모 작성자만 공유를 해제할 수 있어요.");
         }
 
+        // 공유가 풀린 사람의 화면에서도 사라져야 하므로 지우기 전에 받는 사람을 정한다.
+        ChangeEvents audience = audience(memo);
         if (memoShareRepository.deleteByMemoIdAndUserId(memoId, targetUserId) == 0) {
             throw new ItemNotFoundException("이 메모를 공유받은 사람이 아니에요.");
         }
@@ -128,6 +135,7 @@ public class MemoService {
         if (!isCurrentGroupMember(memo, targetUserId)) {
             memoFavoriteRepository.deleteByUserIdAndMemoId(targetUserId, memoId);
         }
+        audience.publish(eventPublisher);
     }
 
     @Transactional(readOnly = true)
@@ -175,6 +183,7 @@ public class MemoService {
             mentioned.add(schedule.getId());
         }
         savedMemo.replaceMentionedSchedules(mentioned);
+        audience(savedMemo).publish(eventPublisher);
 
         return convertToResponse(savedMemo, viewer, null);
     }
@@ -218,8 +227,10 @@ public class MemoService {
         // 동시 삭제는 행 잠금으로 줄 세운다: 먼저 지운 쪽만 성공하고 나머지는 404.
         Memo memo = findMemoForUpdate(memoId);
         validateAuthor(memo, userId);
+        ChangeEvents audience = audience(memo);
         deleteMemoInternal(memo);
         ConcurrentUpdates.flush(memoRepository::flush);
+        audience.publish(eventPublisher);
     }
 
     @Transactional
@@ -234,6 +245,7 @@ public class MemoService {
         saveTags(memo, tags);
         memo.markModified(modifier);
         ConcurrentUpdates.flush(memoRepository::flush);
+        audience(memo).publish(eventPublisher);
 
         return convertToResponse(memo, viewer(modifier), null);
     }
@@ -292,6 +304,7 @@ public class MemoService {
         if (previousImageUrl != null && !previousImageUrl.equals(imageUrl)) {
             fileService.deleteFileAfterCommit(previousImageUrl);
         }
+        audience(memo).publish(eventPublisher);
 
         return convertToResponse(memo, viewer, null);
     }
@@ -368,6 +381,8 @@ public class MemoService {
             ConcurrentUpdates.flush(memoFavoriteRepository::flush);
             favorite = true;
         }
+        // 즐겨찾기는 나에게만 보인다(다른 탭·기기 반영)
+        eventPublisher.publishEvent(ChangeEvent.of(Set.of(userId), LiveTopics.MEMOS));
 
         MemoResponse response = convertToResponse(memo, viewer, Set.of());
         response.setIsFavorite(favorite);
@@ -389,6 +404,11 @@ public class MemoService {
     }
 
     // ─── 내부 헬퍼 메서드 (분리 및 최적화) ──────────────────────────
+
+    /** 지금 이 메모를 볼 수 있는 사람(작성자·공유받은 사람·모임 멤버). group:{gid} 는 모임 멤버에게만 (LiveAudience). 커밋 뒤에 보낸다 */
+    private ChangeEvents audience(Memo memo) {
+        return LiveAudience.addMemo(new ChangeEvents(), memo, memoShareRepository, groupMemberRepository);
+    }
 
     private void deleteMemoInternal(Memo memo) {
         // 메모 삭제 시 연결된 일정에서도 해당 메모를 삭제 (동기화)

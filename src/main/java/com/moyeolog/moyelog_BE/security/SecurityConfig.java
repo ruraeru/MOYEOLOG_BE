@@ -52,6 +52,9 @@ public class SecurityConfig {
                 .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
                 // 컨테이너 오류 화면(sendError → /error)은 원래 상태 코드를 그대로 보여 준다(401 로 덮어쓰지 않음).
                 .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                // 비동기 요청(실시간 스트림 /api/events)이 끝날 때의 재디스패치. 첫 요청에서 이미 인증했고,
+                // JWT 필터는 재디스패치에서 다시 돌지 않으므로 여기서 막으면 닫힌 스트림에 401 을 쓰려 한다.
+                .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                 .requestMatchers("/api/auth/**", "/uploads/**", "/api/search-image/**").permitAll()
                 // 이메일 가입·인증·비밀번호 찾기(로그인 전 화면에서 부른다). 계정 유무를 드러내지 않게 서비스가 처리한다.
                 .requestMatchers("/api/account/**").permitAll()

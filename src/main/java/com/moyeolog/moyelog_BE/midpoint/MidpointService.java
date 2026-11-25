@@ -2,6 +2,8 @@ package com.moyeolog.moyelog_BE.midpoint;
 
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.event.ChangeEvents;
+import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
@@ -64,6 +66,7 @@ public class MidpointService {
             departure.change(name, request.latitude(), request.longitude());
         }
         departureRepository.flush();
+        publishChange(schedule);
         return respond(schedule, eligible, userId);
     }
 
@@ -73,6 +76,7 @@ public class MidpointService {
         Set<UUID> eligible = requireEligible(schedule, userId);
         departureRepository.findBySchedule_IdAndUser_Id(scheduleId, userId).ifPresent(departureRepository::delete);
         departureRepository.flush();
+        publishChange(schedule);
         return respond(schedule, eligible, userId);
     }
 
@@ -107,6 +111,7 @@ public class MidpointService {
         boolean hasCoords = request.latitude() != null && request.longitude() != null;
         schedule.changeLocation(place, hasCoords ? request.latitude() : null, hasCoords ? request.longitude() : null);
         scheduleRepository.flush();
+        publishChange(schedule);
 
         String message = schedule.getAuthor().getNickname() + "님이 '" + shortTitle(schedule)
                 + "' 일정 장소를 정했어요: " + CodePointSizeValidator.truncate(place, 40);
@@ -154,6 +159,14 @@ public class MidpointService {
                     : "일정을 만든 사람과 참여자만 할 수 있어요.");
         }
         return eligible;
+    }
+
+    /**
+     * 커밋 뒤 실시간 갱신: 출발지·장소가 바뀌면 그 일정과 일정 목록(출발지 미입력·장소 미정 표시), 모임 일정이면 모임 달력.
+     * 출발지 대상자(eligible)가 아니라 그 일정을 볼 수 있는 사람 전부다: 모임을 나간 작성자도 자기 일정은 본다.
+     */
+    private void publishChange(Schedule schedule) {
+        LiveAudience.addSchedule(new ChangeEvents(), schedule, groupMemberRepository).publish(eventPublisher);
     }
 
     private void requireAuthor(Schedule schedule, UUID userId, String message) {

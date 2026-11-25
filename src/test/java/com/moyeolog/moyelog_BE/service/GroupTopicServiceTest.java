@@ -221,7 +221,7 @@ class GroupTopicServiceTest {
         GroupTopic mine = ownTopic();
         given(groupTopicRepository.findById(mine.getId())).willReturn(Optional.of(mine));
         groupTopicService.createComment(userId, mine.getId(), new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest("셀프"));
-        verify(eventPublisher, org.mockito.Mockito.times(1)).publishEvent(any(Object.class));
+        verify(eventPublisher, org.mockito.Mockito.times(1)).publishEvent(any(com.moyeolog.moyelog_BE.event.NotificationEvent.class));
     }
 
     @Test

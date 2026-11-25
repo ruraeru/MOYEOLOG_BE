@@ -10,9 +10,13 @@ import com.moyeolog.moyelog_BE.entity.Memo;
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.enums.InvitationStatus;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.ChangeEvents;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
+import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.repository.*;
 import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
@@ -87,6 +91,7 @@ public class GroupService {
                 .group(savedGroup)
                 .user(creator)
                 .build());
+        eventPublisher.publishEvent(ChangeEvent.of(List.of(userId), LiveTopics.GROUPS));
 
         return convertToResponse(savedGroup, userId);
     }
@@ -188,6 +193,8 @@ public class GroupService {
                 .build());
         // 먼저 받아 둔 이 모임 대기 초대는 정리
         groupInvitationRepository.deletePendingForInvitee(group.getId(), userId);
+        // 가입한 사람은 받은 초대 목록에서도 이 모임 초대가 빠진다(같은 이벤트에 담는다)
+        membershipChange(group.getId()).add(List.of(userId), LiveTopics.NOTIFICATIONS).publish(eventPublisher);
         return GroupJoinResponse.builder().groupId(group.getId()).build();
     }
 
@@ -374,6 +381,8 @@ public class GroupService {
                     .status(InvitationStatus.PENDING)
                     .build());
             created++;
+            // 받은 초대 목록(알림 화면의 초대 탭). 초대 알림을 꺼 둔 사람도 목록은 바뀐다.
+            eventPublisher.publishEvent(ChangeEvent.of(List.of(userId), LiveTopics.NOTIFICATIONS));
             eventPublisher.publishEvent(new NotificationEvent(userId, inviterId, NotificationType.GROUP_INVITE,
                     inviter.getNickname() + "님이 \"" + group.getName() + "\" 모임에 초대했어요.",
                     "/notifications?tab=invites"));
@@ -419,12 +428,14 @@ public class GroupService {
         }
         // 같은 모임의 다른 대기 초대(과거 중복 데이터)도 정리
         groupInvitationRepository.deletePendingForInvitee(groupId, userId);
+        membershipChange(groupId).add(List.of(userId), LiveTopics.NOTIFICATIONS).publish(eventPublisher);
     }
 
     @Transactional
     public void rejectInvitation(UUID userId, UUID invitationId) {
         GroupInvitation invitation = lockPendingInvitation(userId, invitationId);
         invitation.reject();
+        eventPublisher.publishEvent(ChangeEvent.of(List.of(userId), LiveTopics.NOTIFICATIONS));
     }
 
     /**
@@ -482,6 +493,7 @@ public class GroupService {
             group.setBackgroundImage(newBackgroundImage);
             fileService.deleteFileAfterCommit(previous);
         }
+        eventPublisher.publishEvent(ChangeEvent.of(members(groupId), LiveTopics.GROUPS, LiveTopics.group(groupId)));
 
         return convertToResponse(group, userId);
     }
@@ -499,11 +511,13 @@ public class GroupService {
             throw badRequest("자기 자신은 내보낼 수 없어요.");
         }
 
+        // 내보내진 사람의 화면에서도 모임이 사라져야 하므로 지우기 전 멤버에게 알린다.
+        ChangeEvents changes = membershipChange(groupId);
         // 동시에 나가기·내보내기가 와도 예외 없이 지운 행 수로 판단한다.
         if (groupMemberRepository.deleteMembership(groupId, targetMemberId) == 0) {
             throw notFound("모임 멤버를 찾을 수 없어요. 이미 나갔을 수 있어요.");
         }
-        removeFromGroupSchedules(groupId, targetMemberId);
+        removeFromGroupSchedules(groupId, targetMemberId, changes);
 
         if (!groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, targetMemberId)) {
             groupBlockRepository.save(GroupBlock.builder()
@@ -517,6 +531,7 @@ public class GroupService {
 
         // 내보낸 멤버가 알고 있는 초대 코드는 더 이상 쓰지 못하도록 새로 발급한다.
         group.setInviteCode(generateUniqueInviteCode());
+        changes.publish(eventPublisher);
 
         eventPublisher.publishEvent(new NotificationEvent(targetMemberId, ownerId, NotificationType.GROUP_KICKED,
                 "\"" + group.getName() + "\" 모임에서 내보내졌어요.", "/groups"));
@@ -531,12 +546,14 @@ public class GroupService {
             throw badRequest("방장은 모임을 나갈 수 없어요. 모임을 삭제해 주세요.");
         }
 
+        ChangeEvents changes = membershipChange(groupId);
         if (groupMemberRepository.deleteMembership(groupId, userId) == 0) {
             throw forbidden(NOT_MEMBER);
         }
-        removeFromGroupSchedules(groupId, userId);
+        removeFromGroupSchedules(groupId, userId, changes);
         // 나간 사람이 보낸 대기 초대는 더 이상 유효하지 않다.
         groupInvitationRepository.deletePendingFromInviter(groupId, userId);
+        changes.publish(eventPublisher);
     }
 
     /**
@@ -549,7 +566,27 @@ public class GroupService {
         // 동시에 두 번 삭제하면 두 번째는 잠금을 기다린 뒤 404
         Group group = lockGroup(groupId);
         requireOwner(group, userId, "방장만 모임을 삭제할 수 있어요.");
+        ChangeEvents changes = membershipChange(groupId);
+        // 모임 일정은 작성자의 개인 일정이 되므로 그 일정을 보던 사람(멤버)에게 schedule:{id} 도
+        for (Schedule schedule : scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId)) {
+            LiveAudience.addSchedule(changes, schedule, groupMemberRepository);
+        }
         deleteGroupInternal(group);
+        // 모임 메모·일정은 작성자의 개인 것으로 남으므로 메모·일정 목록도 바뀐다.
+        changes.publish(eventPublisher);
+    }
+
+    private Set<UUID> members(UUID groupId) {
+        return new LinkedHashSet<>(groupMemberRepository.findUserIdsByGroupId(groupId));
+    }
+
+    /**
+     * 멤버가 바뀜(가입·탈퇴·내보내기·삭제): 지금 멤버에게 내 모임 목록, 그 모임, 그리고 모임 메모·일정이 보이거나 안 보이게 되므로
+     * 메모·일정 목록도. 나가기·내보내기·삭제는 바꾸기 전에, 가입은 바꾼 뒤에 불러 변경 전·후 멤버가 모두 받게 한다.
+     */
+    private ChangeEvents membershipChange(UUID groupId) {
+        return new ChangeEvents().add(members(groupId), LiveTopics.GROUPS, LiveTopics.group(groupId),
+                LiveTopics.SCHEDULES, LiveTopics.MEMOS);
     }
 
     private void deleteGroupInternal(Group group) {
@@ -641,9 +678,12 @@ public class GroupService {
     }
 
     /** 모임을 떠난 사용자를 그 모임 일정의 참여자 목록에서 제거합니다. */
-    private void removeFromGroupSchedules(UUID groupId, UUID userId) {
+    /** 나간·내보내진 사람을 모임 일정 참여자에서 뺀다. 참여자가 바뀐 일정은 changes 에 담는다(schedule:{id}). */
+    private void removeFromGroupSchedules(UUID groupId, UUID userId, ChangeEvents changes) {
         for (Schedule schedule : scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId)) {
-            if (schedule.getParticipants() != null) {
+            if (schedule.getParticipants() != null
+                    && schedule.getParticipants().stream().anyMatch(p -> p.getId().equals(userId))) {
+                LiveAudience.addSchedule(changes, schedule, groupMemberRepository);
                 schedule.getParticipants().removeIf(p -> p.getId().equals(userId));
             }
         }
