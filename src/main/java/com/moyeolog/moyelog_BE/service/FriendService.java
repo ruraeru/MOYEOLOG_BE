@@ -5,6 +5,10 @@ import com.moyeolog.moyelog_BE.entity.Friend;
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.enums.FriendStatus;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.ChangeEvents;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
+import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
@@ -13,6 +17,7 @@ import com.moyeolog.moyelog_BE.exception.BadRequestException;
 import com.moyeolog.moyelog_BE.exception.ConflictException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.FriendRepository;
+import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.MemoFavoriteRepository;
 import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
 import com.moyeolog.moyelog_BE.repository.ScheduleRepository;
@@ -42,6 +47,7 @@ public class FriendService {
     private final MemoShareRepository memoShareRepository;
     private final MemoFavoriteRepository memoFavoriteRepository;
     private final ScheduleRepository scheduleRepository;
+    private final GroupMemberRepository groupMemberRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
@@ -70,6 +76,7 @@ public class FriendService {
         friendRepository.save(friend);
         // 동시 요청·역요청은 쌍 유니크 제약에 걸린다 → 409.
         ConcurrentUpdates.flush(friendRepository::flush, ALREADY_RELATED);
+        eventPublisher.publishEvent(ChangeEvent.of(List.of(requester.getId(), receiver.getId()), LiveTopics.FRIENDS));
 
         eventPublisher.publishEvent(new NotificationEvent(receiver.getId(), requester.getId(),
                 NotificationType.FRIEND_REQUEST, requester.getNickname() + "님이 친구 요청을 보냈어요.", "/friends"));
@@ -122,6 +129,9 @@ public class FriendService {
         friend.accept();
         ConcurrentUpdates.flush(friendRepository::flush);
         retractRequestNotification(friend);
+        // 친구가 되면 메시지 대화 상대 목록도 바뀐다
+        eventPublisher.publishEvent(ChangeEvent.of(List.of(friend.getRequester().getId(), userId),
+                LiveTopics.FRIENDS, LiveTopics.MESSAGES));
 
         User receiver = friend.getReceiver();
         eventPublisher.publishEvent(new NotificationEvent(friend.getRequester().getId(), receiver.getId(),
@@ -140,9 +150,15 @@ public class FriendService {
         }
 
         boolean wasPending = friend.getStatus() == FriendStatus.PENDING;
-        cleanUpBetween(friend.getRequester().getId(), friend.getReceiver().getId());
+        // 친구를 끊으면 서로의 메모 공유·개인 일정 참여·대화 상대도 정리된다.
+        // 참여자가 정리되는 일정은 그 일정을 보던 다른 참여자도 받는다(정리 전에 담는다).
+        ChangeEvents changes = new ChangeEvents();
+        cleanUpBetween(friend.getRequester().getId(), friend.getReceiver().getId(), changes);
         friendRepository.delete(friend);
         ConcurrentUpdates.flush(friendRepository::flush);
+        changes.add(List.of(friend.getRequester().getId(), friend.getReceiver().getId()),
+                LiveTopics.FRIENDS, LiveTopics.MEMOS, LiveTopics.SCHEDULES, LiveTopics.MESSAGES);
+        changes.publish(eventPublisher);
         if (wasPending) {
             retractRequestNotification(friend);
         }
@@ -161,8 +177,8 @@ public class FriendService {
         friendRepository.deleteAllInvolving(event.userId());
     }
 
-    /** 두 사람 사이의 메모 공유(양방향), 그 공유로 생긴 즐겨찾기, 서로의 개인 일정 참여를 정리한다. */
-    private void cleanUpBetween(UUID a, UUID b) {
+    /** 두 사람 사이의 메모 공유(양방향), 그 공유로 생긴 즐겨찾기, 서로의 개인 일정 참여를 정리한다. 참여자가 바뀐 일정은 changes 에 담는다. */
+    private void cleanUpBetween(UUID a, UUID b, ChangeEvents changes) {
         List<UUID> shareIds = memoShareRepository.findIdsBetween(a, b);
         if (!shareIds.isEmpty()) {
             List<UUID> memosSharedToA = memoShareRepository.findMemoIdsByIdsAndRecipient(shareIds, a);
@@ -172,8 +188,8 @@ public class FriendService {
             removeFavoritesNoLongerReadable(b, memosSharedToB);
         }
 
-        removePersonalParticipation(a, b);
-        removePersonalParticipation(b, a);
+        removePersonalParticipation(a, b, changes);
+        removePersonalParticipation(b, a, changes);
     }
 
     private void removeFavoritesNoLongerReadable(UUID userId, List<UUID> memoIds) {
@@ -182,8 +198,9 @@ public class FriendService {
         memoFavoriteRepository.deleteUnreadableByUserIdAndMemoIds(userId, memoIds);
     }
 
-    private void removePersonalParticipation(UUID authorId, UUID participantId) {
+    private void removePersonalParticipation(UUID authorId, UUID participantId, ChangeEvents changes) {
         for (Schedule schedule : scheduleRepository.findPersonalByAuthorAndParticipant(authorId, participantId)) {
+            LiveAudience.addSchedule(changes, schedule, groupMemberRepository);
             schedule.getParticipants().removeIf(p -> p.getId().equals(participantId));
         }
     }

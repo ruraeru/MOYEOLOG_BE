@@ -183,6 +183,15 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "지원하지 않는 요청 형식이에요.");
     }
 
+    /**
+     * 클라이언트가 이미 끊은 비동기 응답(실시간 스트림 /api/events 의 탭 닫기 등). 쓸 곳이 없으니 아무것도 하지 않는다.
+     * 아래 catch-all 로 가면 ERROR 로그를 남기고 text/event-stream 응답에 JSON 을 쓰려다 다시 실패했다.
+     */
+    @ExceptionHandler(org.springframework.web.context.request.async.AsyncRequestNotUsableException.class)
+    public void handleAsyncRequestNotUsable() {
+        log.debug("Async response no longer usable (client disconnected)");
+    }
+
     // ─── 500 ────────────────────────────────────────────────────────
 
     @ExceptionHandler(Exception.class)

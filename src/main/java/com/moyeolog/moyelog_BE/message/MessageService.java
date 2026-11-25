@@ -2,6 +2,8 @@ package com.moyeolog.moyelog_BE.message;
 
 import com.moyeolog.moyelog_BE.entity.Friend;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
@@ -11,6 +13,7 @@ import com.moyeolog.moyelog_BE.repository.FriendRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
 import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -38,6 +41,7 @@ public class MessageService {
     private final UserRepository userRepository;
     private final FriendRepository friendRepository;
     private final NotificationService notificationService;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Transactional(readOnly = true)
     public List<ConversationResponse> getConversations(UUID userId) {
@@ -109,13 +113,17 @@ public class MessageService {
                 .recipient(recipient)
                 .content(content)
                 .build());
+        eventPublisher.publishEvent(ChangeEvent.of(List.of(userId, friendId), LiveTopics.MESSAGES));
         return MessageResponse.from(saved);
     }
 
     @Transactional
     public void markRead(UUID userId, UUID friendId) {
         findUser(friendId);
-        messageRepository.markRead(userId, friendId, LocalDateTime.now());
+        // 읽은 사람의 배지(다른 탭)와 보낸 사람의 '읽음' 표시
+        if (messageRepository.markRead(userId, friendId, LocalDateTime.now()) > 0) {
+            eventPublisher.publishEvent(ChangeEvent.of(List.of(userId, friendId), LiveTopics.MESSAGES));
+        }
     }
 
     /**

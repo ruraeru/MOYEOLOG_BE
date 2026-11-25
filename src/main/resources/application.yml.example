@@ -91,3 +91,10 @@ server:
 kma:
   service-key: ${KMA_SERVICE_KEY:}
   base-url: ${KMA_BASE_URL:https://apihub.kma.go.kr/api/typ02/openApi}
+
+# 실시간 갱신(GET /api/events, SSE). 기본값으로 충분하다(환경변수 없이 @Value 기본값).
+# 사용자당 연결 상한(넘으면 가장 오래된 연결을 닫음), 연결 최대 수명(이보다 이른 토큰 만료 때도 닫음), 하트비트 주기.
+live:
+  max-connections-per-user: 6
+  max-age-ms: 1800000
+  heartbeat-ms: 25000

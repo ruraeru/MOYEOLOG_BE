@@ -2,6 +2,8 @@ package com.moyeolog.moyelog_BE.service;
 
 import com.moyeolog.moyelog_BE.dto.*;
 import com.moyeolog.moyelog_BE.entity.*;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
@@ -75,7 +77,9 @@ public class GroupTopicService {
                 .imageUrl(imageUrl)
                 .build();
 
-        return convertToResponse(groupTopicRepository.save(topic));
+        GroupTopicResponse response = convertToResponse(groupTopicRepository.save(topic));
+        publishChange(groupId);
+        return response;
     }
 
     @Transactional(readOnly = true)
@@ -113,6 +117,7 @@ public class GroupTopicService {
         if (previousImage != null && !previousImage.equals(imageUrl)) {
             groupImageService.deleteAfterCommit(previousImage);
         }
+        publishChange(topic.getGroup().getId());
         return convertToResponse(topic);
     }
 
@@ -123,8 +128,10 @@ public class GroupTopicService {
                 .orElseThrow(() -> GroupErrors.notFound(TOPIC_NOT_FOUND));
         validateAuthor(topic, userId);
         String imageUrl = topic.getImageUrl();
+        UUID groupId = topic.getGroup().getId();
         groupTopicRepository.delete(topic);
         groupImageService.deleteAfterCommit(imageUrl);
+        publishChange(groupId);
     }
 
     @Transactional
@@ -140,6 +147,7 @@ public class GroupTopicService {
                 .content(request.getContent())
                 .build();
         GroupTopicComment saved = groupTopicCommentRepository.save(comment);
+        publishChange(topic.getGroup().getId());
 
         UUID topicAuthorId = topic.getAuthor().getId();
         if (!topicAuthorId.equals(userId)) {
@@ -160,6 +168,7 @@ public class GroupTopicService {
 
         validateCommentContent(request.getContent());
         comment.update(request.getContent());
+        publishChange(comment.getTopic().getGroup().getId());
         return convertToCommentResponse(comment);
     }
 
@@ -171,6 +180,13 @@ public class GroupTopicService {
         validateCommentAuthor(comment, userId);
         comment.getTopic().getComments().remove(comment);
         groupTopicCommentRepository.delete(comment);
+        publishChange(comment.getTopic().getGroup().getId());
+    }
+
+    /** 커밋 뒤 실시간 갱신: 그 모임 멤버의 모임 화면(토픽·댓글) */
+    private void publishChange(UUID groupId) {
+        eventPublisher.publishEvent(ChangeEvent.of(groupMemberRepository.findUserIdsByGroupId(groupId),
+                LiveTopics.group(groupId)));
     }
 
     /** 회원 탈퇴 직전: 내가 쓴 토픽(다른 사람 댓글·분석 포함)과 내 댓글을 지운다. 모임 정리(GroupService)보다 먼저. */

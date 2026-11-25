@@ -6,6 +6,7 @@ import com.moyeolog.moyelog_BE.dto.AuthSyncResponse;
 import com.moyeolog.moyelog_BE.dto.UserMeResponse;
 import com.moyeolog.moyelog_BE.dto.UserSessionResponse;
 import com.moyeolog.moyelog_BE.entity.RevokedAccessToken;
+import com.moyeolog.moyelog_BE.event.LiveCloseEvent;
 import com.moyeolog.moyelog_BE.exception.ResourceNotFoundException;
 import com.moyeolog.moyelog_BE.repository.RevokedAccessTokenRepository;
 import com.moyeolog.moyelog_BE.entity.RefreshToken;
@@ -43,6 +44,7 @@ public class AuthService {
     private final RevokedAccessTokenRepository revokedAccessTokenRepository;
     private final JwtProvider jwtProvider;
     private final PasswordEncoder passwordEncoder;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final SecureRandom random = new SecureRandom();
     private static final long ROTATION_GRACE_SECONDS = 60;
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -448,6 +450,8 @@ public class AuthService {
             jwtProvider.parse(accessToken)
                     .filter(token -> token.jti() != null && token.expiresAt() != null)
                     .ifPresent(token -> {
+                        // 이 기기(이 토큰)로 연 실시간 연결을 커밋 뒤에 닫는다
+                        closeLiveConnections(token.userId(), token.jti());
                         LocalDateTime expiresAt = LocalDateTime.ofInstant(token.expiresAt(), ZoneId.systemDefault());
                         if (expiresAt.isAfter(now) && !revokedAccessTokenRepository.existsById(token.jti())) {
                             revokedAccessTokenRepository.save(RevokedAccessToken.builder()
@@ -489,6 +493,15 @@ public class AuthService {
                 .orElseThrow(() -> new ResourceNotFoundException("사용자", null));
         refreshTokenRepository.deleteAllByUserId(userId);
         user.setTokensValidAfter(LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS));
+        closeLiveConnections(userId.toString(), null);
+    }
+
+    private void closeLiveConnections(String userId, String jti) {
+        try {
+            eventPublisher.publishEvent(new LiveCloseEvent(UUID.fromString(userId), jti));
+        } catch (IllegalArgumentException ignored) {
+            // 사용자 ID 가 UUID 가 아닌 토큰은 연결도 없다
+        }
     }
 
     /**

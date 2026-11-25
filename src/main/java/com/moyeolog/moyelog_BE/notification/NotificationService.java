@@ -1,12 +1,15 @@
 package com.moyeolog.moyelog_BE.notification;
 
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
 import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -29,6 +32,7 @@ public class NotificationService {
     private final NotificationRepository notificationRepository;
     private final NotificationPreferenceRepository preferenceRepository;
     private final UserRepository userRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     // ─── 조회·읽음·삭제 ───────────────────────────────────────────────
 
@@ -51,11 +55,13 @@ public class NotificationService {
         notificationRepository.findByIdAndRecipient_Id(notificationId, userId)
                 .orElseThrow(() -> new NotFoundException(NOT_FOUND_MESSAGE))
                 .markRead();
+        publishChange(userId);
     }
 
     @Transactional
     public void markAllRead(UUID userId) {
         notificationRepository.markAllRead(userId, LocalDateTime.now());
+        publishChange(userId);
     }
 
     @Transactional
@@ -63,6 +69,12 @@ public class NotificationService {
         Notification notification = notificationRepository.findByIdAndRecipient_Id(notificationId, userId)
                 .orElseThrow(() -> new NotFoundException(NOT_FOUND_MESSAGE));
         notificationRepository.delete(notification);
+        publishChange(userId);
+    }
+
+    /** 커밋 뒤 실시간 갱신: 받는 사람의 알림 목록·배지 */
+    private void publishChange(UUID recipientId) {
+        eventPublisher.publishEvent(ChangeEvent.of(java.util.List.of(recipientId), LiveTopics.NOTIFICATIONS));
     }
 
     // ─── 설정 ────────────────────────────────────────────────────────
@@ -115,6 +127,7 @@ public class NotificationService {
                 .message(CodePointSizeValidator.truncate(message, MAX_MESSAGE_LENGTH))
                 .link(safeLink(event.link()))
                 .build());
+        publishChange(recipient.getId());
         return true;
     }
 
@@ -126,7 +139,9 @@ public class NotificationService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int retract(NotificationRetractEvent event) {
         if (event == null || event.recipientId() == null || event.actorId() == null || event.type() == null) return 0;
-        return notificationRepository.deleteByRecipientAndActorAndType(event.recipientId(), event.actorId(), event.type());
+        int deleted = notificationRepository.deleteByRecipientAndActorAndType(event.recipientId(), event.actorId(), event.type());
+        if (deleted > 0) publishChange(event.recipientId());
+        return deleted;
     }
 
     /** 앱 안의 경로("/..." 이고 "//" 로 시작하지 않음)만 링크로 남긴다. */

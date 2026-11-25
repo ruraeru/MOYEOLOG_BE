@@ -6,6 +6,8 @@ import com.moyeolog.moyelog_BE.dto.ScheduleResponse;
 import com.moyeolog.moyelog_BE.entity.Memo;
 import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.entity.User;
+import com.moyeolog.moyelog_BE.event.ChangeEvents;
+import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
@@ -78,6 +80,7 @@ public class ScheduleService {
 
         Schedule savedSchedule = scheduleRepository.save(schedule);
         notifyNewParticipants(savedSchedule, author, Set.of());
+        LiveAudience.addSchedule(new ChangeEvents(), savedSchedule, groupMemberRepository).publish(eventPublisher);
         return convertToResponse(savedSchedule, userId);
     }
 
@@ -122,8 +125,10 @@ public class ScheduleService {
             throw new UnauthorizedAccessException("일정을 만든 사람만 삭제할 수 있어요.");
         }
 
+        ChangeEvents changes = LiveAudience.addSchedule(new ChangeEvents(), schedule, groupMemberRepository);
         scheduleRepository.delete(schedule);
         ConcurrentUpdates.flush(scheduleRepository::flush);
+        changes.publish(eventPublisher);
     }
 
     @Transactional
@@ -158,6 +163,9 @@ public class ScheduleService {
 
         List<Memo> taggedMemos = resolveTaggedMemos(request.getTaggedMemoIds(), userId, existingMemoIds);
         List<User> participants = resolveParticipants(request.getParticipantIds(), userId, newGroupId, existingParticipantIds);
+        // 변경 전에 볼 수 있던 사람(참여자에서 빠진 사람, 옮기기 전 모임 멤버)도 화면에서 지워야 한다.
+        // 옛 모임 토픽은 옛 모임 멤버에게만, 새 모임 토픽은 새 모임 멤버에게만 간다.
+        ChangeEvents changes = LiveAudience.addSchedule(new ChangeEvents(), schedule, groupMemberRepository);
 
         schedule.update(
                 request.getTitle(),
@@ -174,6 +182,7 @@ public class ScheduleService {
         ConcurrentUpdates.flush(scheduleRepository::flush);
 
         notifyNewParticipants(schedule, schedule.getAuthor(), existingParticipantIds);
+        LiveAudience.addSchedule(changes, schedule, groupMemberRepository).publish(eventPublisher);
         return convertToResponse(schedule, userId);
     }
 
