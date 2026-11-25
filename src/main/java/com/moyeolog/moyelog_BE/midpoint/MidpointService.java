@@ -104,7 +104,8 @@ public class MidpointService {
         requireAuthor(schedule, userId, "일정을 만든 사람만 장소를 정할 수 있어요.");
 
         String place = request.name().trim();
-        schedule.changeLocation(place);
+        boolean hasCoords = request.latitude() != null && request.longitude() != null;
+        schedule.changeLocation(place, hasCoords ? request.latitude() : null, hasCoords ? request.longitude() : null);
         scheduleRepository.flush();
 
         String message = schedule.getAuthor().getNickname() + "님이 '" + shortTitle(schedule)

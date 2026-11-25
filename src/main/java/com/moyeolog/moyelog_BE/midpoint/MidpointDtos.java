@@ -32,7 +32,14 @@ public final class MidpointDtos {
     public record ConfirmRequest(
             @NotBlank(message = "장소를 골라 주세요.")
             @CodePointSize(max = 255, message = "장소는 255자까지 쓸 수 있어요.")
-            String name) {
+            String name,
+            // 고른 장소의 좌표(날씨 조회용). 둘 다 있을 때만 저장한다.
+            @DecimalMin(value = "-90", message = "위도가 올바르지 않아요.")
+            @DecimalMax(value = "90", message = "위도가 올바르지 않아요.")
+            Double latitude,
+            @DecimalMin(value = "-180", message = "경도가 올바르지 않아요.")
+            @DecimalMax(value = "180", message = "경도가 올바르지 않아요.")
+            Double longitude) {
     }
 
     /** 다른 사람의 출발지는 이름만 준다 (좌표 없음) */

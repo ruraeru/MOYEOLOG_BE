@@ -183,7 +183,7 @@ class MidpointIntegrationTest {
         mockMvc.perform(jsonBody(auth(post(base(scheduleId) + "/confirm"), owner), Map.of("name", " ")))
                 .andExpect(status().isBadRequest());
         JsonNode confirmed = json(mockMvc.perform(jsonBody(auth(post(base(scheduleId) + "/confirm"), owner),
-                Map.of("name", "합정역 2호선"))).andExpect(status().isOk()).andReturn());
+                Map.of("name", "합정역 2호선", "latitude", 37.5495, "longitude", 126.9139))).andExpect(status().isOk()).andReturn());
         assertThat(confirmed.path("location").asText()).isEqualTo("합정역 2호선");
         assertThat(notificationCount(member)).isEqualTo(memberBefore + 1);
         assertThat(notificationCount(third)).isEqualTo(thirdBefore + 2);
@@ -191,9 +191,20 @@ class MidpointIntegrationTest {
         // 일정 목록에도 장소가 들어간다
         String location = null;
         for (JsonNode s : json(mockMvc.perform(auth(get("/api/schedules"), member)).andReturn())) {
-            if (s.path("id").asText().equals(scheduleId)) location = s.path("location").asText();
+            if (s.path("id").asText().equals(scheduleId)) {
+                location = s.path("location").asText();
+                assertThat(s.path("latitude").asDouble()).isCloseTo(37.5495, within(1e-9));
+                assertThat(s.path("longitude").asDouble()).isCloseTo(126.9139, within(1e-9));
+            }
         }
         assertThat(location).isEqualTo("합정역 2호선");
+
+        // 좌표 없이 다시 정하면 예전 좌표는 지워진다 (다른 장소의 날씨가 나오지 않게)
+        mockMvc.perform(jsonBody(auth(post(base(scheduleId) + "/confirm"), owner), Map.of("name", "직접 정한 곳")))
+                .andExpect(status().isOk());
+        for (JsonNode s : json(mockMvc.perform(auth(get("/api/schedules"), member)).andReturn())) {
+            if (s.path("id").asText().equals(scheduleId)) assertThat(s.path("latitude").isNull()).isTrue();
+        }
     }
 
     @Test
