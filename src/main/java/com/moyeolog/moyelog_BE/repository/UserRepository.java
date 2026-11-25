@@ -24,6 +24,10 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     @Query("SELECT u FROM User u WHERE LOWER(u.email) = LOWER(:email)")
     List<User> findAllByEmailIgnoreCase(@Param("email") String email);
 
+    /** 비밀번호 로그인용: id 만 찾고 행 잠금(findByIdForUpdate)으로 다시 읽는다. */
+    @Query("SELECT u.id FROM User u WHERE LOWER(u.email) = LOWER(:email)")
+    List<UUID> findIdsByEmailIgnoreCase(@Param("email") String email);
+
     @Query("SELECT u FROM User u WHERE LOWER(u.customId) = LOWER(:customId)")
     List<User> findAllByCustomIdIgnoreCase(@Param("customId") String customId);
 

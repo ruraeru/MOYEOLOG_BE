@@ -12,6 +12,8 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.firewall.RequestRejectedHandler;
@@ -51,6 +53,8 @@ public class SecurityConfig {
                 // 컨테이너 오류 화면(sendError → /error)은 원래 상태 코드를 그대로 보여 준다(401 로 덮어쓰지 않음).
                 .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                 .requestMatchers("/api/auth/**", "/uploads/**", "/api/search-image/**").permitAll()
+                // 이메일 가입·인증·비밀번호 찾기(로그인 전 화면에서 부른다). 계정 유무를 드러내지 않게 서비스가 처리한다.
+                .requestMatchers("/api/account/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .anyRequest().authenticated()
             )
@@ -73,6 +77,12 @@ public class SecurityConfig {
     public RequestRejectedHandler requestRejectedHandler() {
         return (request, response, ex) ->
                 JsonErrorWriter.write(response, HttpStatus.BAD_REQUEST, REJECTED_MESSAGE);
+    }
+
+    /** 비밀번호 해시(BCrypt). 이메일 가입·비밀번호 로그인이 함께 쓴다. */
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
     }
 
     /**

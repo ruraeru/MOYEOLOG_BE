@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.controller;
 
+import com.moyeolog.moyelog_BE.dto.AuthUnlinkKakaoRequest;
 import com.moyeolog.moyelog_BE.dto.UserMeResponse;
 import com.moyeolog.moyelog_BE.dto.UserProfileResponse;
 import com.moyeolog.moyelog_BE.dto.UserSessionResponse;
@@ -63,6 +64,15 @@ public class UserController {
     public ResponseEntity<Void> logoutAll(@AuthenticationPrincipal String userId) {
         authService.logoutAll(UUID.fromString(userId));
         return ResponseEntity.noContent().build();
+    }
+
+    /** 카카오 연결 해제. 비밀번호와 인증된 이메일이 있어야 하고, 본문 {currentPassword} 가 맞아야 한다. */
+    @DeleteMapping("/me/kakao")
+    public ResponseEntity<UserMeResponse> unlinkKakao(
+            @AuthenticationPrincipal String userId,
+            @RequestBody(required = false) AuthUnlinkKakaoRequest request) {
+        return ResponseEntity.ok(authService.unlinkKakao(UUID.fromString(userId),
+                request == null ? null : request.getCurrentPassword()));
     }
 
     @GetMapping("/by-custom-id/{customId}")

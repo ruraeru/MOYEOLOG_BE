@@ -61,7 +61,7 @@ class ApiIntegrationTest {
     private Session login(String name) throws Exception {
         String kakaoId = name + "-" + UUID.randomUUID();
         String body = mapper.writeValueAsString(java.util.Map.of(
-                "kakaoId", kakaoId, "email", kakaoId + "@example.com", "nickname", name));
+                "kakaoId", kakaoId, "email", kakaoId + "@example.com", "emailVerified", true, "nickname", name));
         MvcResult result = mockMvc.perform(post("/api/auth/sync")
                         .header(SECRET_HEADER, SECRET)
                         .contentType(MediaType.APPLICATION_JSON).content(body))

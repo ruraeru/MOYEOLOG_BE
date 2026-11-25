@@ -88,7 +88,7 @@ class AiAnalysisIntegrationTest {
 
     private Session login(String name) throws Exception {
         String kakaoId = name + "-" + UUID.randomUUID();
-        String body = mapper.writeValueAsString(Map.of("kakaoId", kakaoId, "email", kakaoId + "@example.com", "nickname", name));
+        String body = mapper.writeValueAsString(Map.of("kakaoId", kakaoId, "email", kakaoId + "@example.com", "emailVerified", true, "nickname", name));
         JsonNode json = json(mockMvc.perform(post("/api/auth/sync").header("X-Internal-Secret", SECRET)
                 .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk()).andReturn());
         return new Session(json.path("user").path("id").asText(), json.path("accessToken").asText());

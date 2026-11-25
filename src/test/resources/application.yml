@@ -13,6 +13,9 @@ spring:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
+  mail:
+    host: 127.0.0.1
+    port: 9
 
 jwt:
   # 테스트용 키 (Base64, 64바이트)
@@ -37,3 +40,10 @@ cors:
 llm:
   base-url: http://127.0.0.1:9
   api-key: ""
+
+# 계정 메일: 테스트는 JavaMailSender 를 목으로 바꿔 쓴다(EmailAccountIntegrationTest). 실제 SMTP 를 부르지 않는다(닫힌 포트).
+mail:
+  from: noreply@moyeolog.test
+
+app:
+  url: https://moyeolog.test
