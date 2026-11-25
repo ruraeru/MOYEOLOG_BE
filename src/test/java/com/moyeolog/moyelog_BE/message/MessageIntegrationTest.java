@@ -156,6 +156,45 @@ class MessageIntegrationTest {
     }
 
     @Test
+    @DisplayName("대화 지우기: 내 쪽에서만 사라지고 상대에게는 남는다. 안 읽은 수도 빠지고, 새 메시지는 다시 보인다")
+    void deleteConversation_oneSided() throws Exception {
+        Session a = login(mockMvc, "지우는이");
+        Session b = login(mockMvc, "남는이");
+        makeFriends(mockMvc, a, b);
+        send(a, b, "보낸 것", 200);
+        send(b, a, "받은 것", 200);
+        assertThat(unread(a)).isEqualTo(1);
+
+        mockMvc.perform(auth(delete("/api/messages/" + b.userId()), a)).andExpect(status().isNoContent());
+
+        // a 쪽: 메시지 없음, 배지 0, 친구라서 목록에는 남되 마지막 메시지가 없다
+        assertThat(messages(a, b, "")).isEmpty();
+        assertThat(unread(a)).isZero();
+        assertThat(conversations(a).get(0).path("lastMessage").isNull()).isTrue();
+        assertThat(conversations(a).get(0).path("unreadCount").asLong()).isZero();
+        // b 쪽: 그대로
+        assertThat(messages(b, a, "")).hasSize(2);
+        assertThat(messageRepository.count()).isGreaterThanOrEqualTo(2);
+
+        // 새 메시지는 a 에게 다시 보인다 (예전 것은 여전히 안 보인다)
+        send(b, a, "새 메시지", 200);
+        assertThat(messages(a, b, "")).hasSize(1);
+        assertThat(messages(a, b, "").get(0).path("content").asText()).isEqualTo("새 메시지");
+        assertThat(unread(a)).isEqualTo(1);
+
+        // b 도 지우면 둘 다 지운 예전 메시지 두 개는 행이 없어지고, a 만 보는 새 메시지는 남는다
+        long before = messageRepository.count();
+        mockMvc.perform(auth(delete("/api/messages/" + a.userId()), b)).andExpect(status().isNoContent());
+        assertThat(messageRepository.count()).isEqualTo(before - 2);
+        assertThat(messages(b, a, "")).isEmpty();
+        assertThat(messages(a, b, "")).hasSize(1);
+
+        // 없는 사용자 404, 로그인 없이 401
+        mockMvc.perform(auth(delete("/api/messages/" + java.util.UUID.randomUUID()), a)).andExpect(status().isNotFound());
+        mockMvc.perform(delete("/api/messages/" + b.userId())).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     @DisplayName("친구를 끊으면 대화는 남되 새로 보낼 수 없음(403)")
     void unfriend_keepsHistory() throws Exception {
         Session a = login(mockMvc, "끊는이");

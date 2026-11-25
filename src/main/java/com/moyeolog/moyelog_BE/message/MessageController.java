@@ -46,6 +46,13 @@ public class MessageController {
         return ResponseEntity.ok(messageService.send(UUID.fromString(userId), friendId, request));
     }
 
+    /** 대화 지우기 (내 쪽에서만) */
+    @DeleteMapping("/{friendId}")
+    public ResponseEntity<Void> deleteConversation(@AuthenticationPrincipal String userId, @PathVariable UUID friendId) {
+        messageService.deleteConversation(UUID.fromString(userId), friendId);
+        return ResponseEntity.noContent().build();
+    }
+
     @PutMapping("/{friendId}/read")
     public ResponseEntity<Void> read(@AuthenticationPrincipal String userId, @PathVariable UUID friendId) {
         messageService.markRead(UUID.fromString(userId), friendId);
