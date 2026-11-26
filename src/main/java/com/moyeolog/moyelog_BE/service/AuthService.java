@@ -242,6 +242,16 @@ public class AuthService {
         return (email == null ? "" : email) + "\n" + ip;
     }
 
+    /** 비밀번호를 재설정하면 그 이메일의 (이메일, IP) 연속 실패·차단을 모두 지운다(메일을 받은 본인이 바로 로그인할 수 있게). */
+    public void clearLoginFailures(String rawEmail) {
+        String email = normalizeEmail(rawEmail);
+        if (email == null) {
+            return;
+        }
+        String prefix = email + "\n";
+        loginPairFailures.keySet().removeIf(k -> k.startsWith(prefix));
+    }
+
     private boolean loginPairBlocked(String key, LocalDateTime now) {
         LoginPairFailures f = loginPairFailures.get(key);
         return f != null && f.blockedUntil() != null && f.blockedUntil().isAfter(now);

@@ -399,6 +399,38 @@ class EmailAccountIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
+    private ResultActions loginFrom(String email, String password, String ip) throws Exception {
+        return mockMvc.perform(post("/api/auth/login").header("X-Internal-Secret", SECRET)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("email", email, "password", password, "clientIp", ip))));
+    }
+
+    @Test
+    @DisplayName("비밀번호 찾기(q03): check 는 소모하지 않고 쓸 수 있는 링크만 204, 공백만인 비밀번호 400, 재설정하면 (이메일, IP) 잠금이 풀린다")
+    void passwordReset_check_blank_andUnlock() throws Exception {
+        postJson("/api/account/password-reset/check", Map.of("token", "garbage")).andExpect(status().isBadRequest());
+
+        String addr = email("unlock");
+        kakao(addr, true);
+        String ip = "10.9.8.7";
+        for (int i = 0; i < 10; i++) {
+            loginFrom(addr, "wrong-pass-" + i, ip).andExpect(status().isUnauthorized());
+        }
+        postJson("/api/account/password-reset", Map.of("email", addr)).andExpect(status().isAccepted());
+        String token = tokenIn(mails(1).getFirst());
+
+        postJson("/api/account/password-reset/check", Map.of("token", token)).andExpect(status().isNoContent());
+        postJson("/api/account/password-reset/check", Map.of("token", token)).andExpect(status().isNoContent());
+        postJson("/api/account/password-reset/confirm", Map.of("token", token, "newPassword", "        "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("공백만으로는 비밀번호를 만들 수 없어요."));
+
+        postJson("/api/account/password-reset/confirm", Map.of("token", token, "newPassword", PASSWORD))
+                .andExpect(status().isNoContent());
+        postJson("/api/account/password-reset/check", Map.of("token", token)).andExpect(status().isBadRequest());
+        loginFrom(addr, PASSWORD, ip).andExpect(status().isOk());
+    }
+
     // ─── 로그인한 사용자 ─────────────────────────────────────────────
 
     @Test

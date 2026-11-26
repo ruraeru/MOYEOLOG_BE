@@ -215,7 +215,22 @@ public class AccountService {
         v.markUsed(now);
         verificationRepository.markAllUsed(user.getId(), Purpose.PASSWORD, now);
         authService.logoutAll(user.getId());
+        authService.clearLoginFailures(user.getEmail());
         mailer.sendPasswordChangedNotice(user.getEmail());
+    }
+
+    /** 재설정 링크를 열었을 때 미리 확인(소모하지 않는다). 쓸 수 없으면 confirm 과 같은 400. */
+    @Transactional
+    public void checkPasswordResetToken(String token) {
+        EmailVerification v = usableToken(token, LocalDateTime.now());
+        if (v.getPurpose() != Purpose.PASSWORD) {
+            throw new BadRequestException(INVALID_TOKEN_MESSAGE);
+        }
+        User user = userRepository.findById(v.getUserId())
+                .orElseThrow(() -> new BadRequestException(INVALID_TOKEN_MESSAGE));
+        if (user.getEmailVerifiedAt() == null || !sameEmail(v.getEmail(), user.getEmail())) {
+            throw new BadRequestException(INVALID_TOKEN_MESSAGE);
+        }
     }
 
     // ─── 로그인한 사용자 (/api/users/me/**) ─────────────────────────
