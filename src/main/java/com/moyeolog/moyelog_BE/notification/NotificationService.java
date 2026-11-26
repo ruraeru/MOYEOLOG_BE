@@ -138,8 +138,15 @@ public class NotificationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int retract(NotificationRetractEvent event) {
-        if (event == null || event.recipientId() == null || event.actorId() == null || event.type() == null) return 0;
-        int deleted = notificationRepository.deleteByRecipientAndActorAndType(event.recipientId(), event.actorId(), event.type());
+        if (event == null || event.recipientId() == null || event.type() == null) return 0;
+        int deleted;
+        if (event.link() != null) {
+            deleted = notificationRepository.deleteByRecipientAndTypeAndLink(event.recipientId(), event.type(), event.link());
+        } else if (event.actorId() != null) {
+            deleted = notificationRepository.deleteByRecipientAndActorAndType(event.recipientId(), event.actorId(), event.type());
+        } else {
+            return 0;
+        }
         if (deleted > 0) publishChange(event.recipientId());
         return deleted;
     }

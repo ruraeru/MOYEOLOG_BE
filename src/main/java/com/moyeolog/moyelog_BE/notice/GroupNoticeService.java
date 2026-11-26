@@ -77,8 +77,8 @@ public class GroupNoticeService {
         noticeRepository.flush();
 
         List<User> members = access.members(groupId);
-        access.notify(members, userId, groupId, nickname(members, userId) + "님이 공지 '" + shortTitle(notice)
-                + "'을(를) 올렸어요." + (request.poll() != null ? " 투표에 참여해 주세요." : ""));
+        access.notify(members, userId, groupId, notice.getId(), nickname(members, userId) + "님이 새 공지를 올렸어요: '"
+                + shortTitle(notice) + "'" + (request.poll() != null ? " 투표에 참여해 주세요." : ""));
         access.publishChange(groupId, members);
         return detail(group, notice, members, userId);
     }

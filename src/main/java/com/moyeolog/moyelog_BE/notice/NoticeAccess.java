@@ -77,9 +77,9 @@ public class NoticeAccess {
         eventPublisher.publishEvent(ChangeEvent.of(recipients.stream().map(User::getId).toList(), LiveTopics.group(groupId)));
     }
 
-    /** 모임 공지 알림(설정과 관계없이 보낸다). 행동한 본인은 빼고, 누르면 그 모임의 공지 탭. */
-    public void notify(Collection<User> recipients, UUID actorId, UUID groupId, String message) {
-        String link = "/groups/" + groupId + "?tab=notice";
+    /** 모임 공지 알림(설정과 관계없이 보낸다). 행동한 본인은 빼고, 누르면 그 모임의 공지 탭에서 그 공지를 연다. */
+    public void notify(Collection<User> recipients, UUID actorId, UUID groupId, UUID noticeId, String message) {
+        String link = "/groups/" + groupId + "?tab=notice&notice=" + noticeId;
         for (User recipient : recipients) {
             if (recipient.getId().equals(actorId)) continue;
             eventPublisher.publishEvent(new NotificationEvent(recipient.getId(), actorId,

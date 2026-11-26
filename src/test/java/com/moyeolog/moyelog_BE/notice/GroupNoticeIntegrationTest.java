@@ -229,7 +229,7 @@ class GroupNoticeIntegrationTest {
         assertThat(notificationCount(a)).isEqualTo(aBefore + 1);
         assertThat(notificationCount(b)).isEqualTo(bBefore + 1);
         assertThat(count("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND type = 'GROUP_NOTICE' AND link = ?",
-                UUID.fromString(a.userId()), "/groups/" + groupId + "?tab=notice")).isEqualTo(1);
+                UUID.fromString(a.userId()), "/groups/" + groupId + "?tab=notice&notice=" + first)).isEqualTo(1);
 
         // 읽음: 목록은 읽음 처리하지 않고, 상세를 열면 읽음
         JsonNode summary = find(list(a, groupId), first);

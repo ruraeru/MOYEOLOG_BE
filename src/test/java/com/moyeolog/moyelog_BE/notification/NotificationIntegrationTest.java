@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.notification;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.notification.NotifyTestSupport.Session;
@@ -182,6 +183,19 @@ class NotificationIntegrationTest {
         assertThat(list(a).size()).isZero();
         assertThat(texts(list(b), "message")).containsExactly("무관");
         assertThat(preferenceRepository.existsById(a.userId())).isFalse();
+    }
+
+    @Test
+    @DisplayName("링크로 지우기: 그 링크의 알림만 지우고 같은 종류의 다른 알림은 남긴다")
+    void retractByLink() throws Exception {
+        Session a = login(mockMvc, "초대받은이");
+        publishInTx(a.userId(), null, NotificationType.GROUP_INVITE, "처리한 초대", "/notifications?tab=invites&group=g1");
+        publishInTx(a.userId(), null, NotificationType.GROUP_INVITE, "대기 초대", "/notifications?tab=invites&group=g2");
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(new NotificationRetractEvent(a.userId(), null,
+                NotificationType.GROUP_INVITE, "/notifications?tab=invites&group=g1")));
+
+        assertThat(texts(list(a), "message")).containsExactly("대기 초대");
     }
 
     private String pendingRequestId(Session receiver) throws Exception {

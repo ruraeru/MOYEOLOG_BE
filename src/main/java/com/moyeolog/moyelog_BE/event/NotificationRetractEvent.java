@@ -9,6 +9,12 @@ import java.util.UUID;
  * @param recipientId 알림을 받았던 사람
  * @param actorId     알림을 만든 행동을 한 사람
  * @param type        지울 알림 종류
+ * @param link        있으면 actorId 대신 이 링크의 알림만 지운다(예: 처리된 모임 초대)
  */
-public record NotificationRetractEvent(UUID recipientId, UUID actorId, NotificationType type) {
+public record NotificationRetractEvent(UUID recipientId, UUID actorId, NotificationType type, String link) {
+
+    /** 받는 사람의, 그 사람이 행동해서 생긴 그 종류 알림 전부 */
+    public NotificationRetractEvent(UUID recipientId, UUID actorId, NotificationType type) {
+        this(recipientId, actorId, type, null);
+    }
 }
