@@ -540,7 +540,7 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
-    @DisplayName("고정: 모임 메모·토픽은 작성자·방장만 고정하고 모두에게 맨 위, 개인 메모는 작성자만, 모임 메모도 즐겨찾기 가능, 고정은 version·수정 시각을 안 바꾼다")
+    @DisplayName("고정: 모임 메모·토픽은 작성자·방장만 고정하고 모두에게 맨 위, 개인 메모는 읽을 수 있는 사람 누구나 자기 고정(서로 안 보임), 모임 메모도 즐겨찾기 가능, 고정은 version·수정 시각을 안 바꾼다")
     void pin_groupAndPersonal() throws Exception {
         Session owner = login("pinowner");
         Session writer = login("pinwriter");
@@ -574,6 +574,9 @@ class MemoFriendScheduleIntegrationTest {
                 .andExpect(status().isOk()).andReturn());
         assertThat(list.get(0).path("id").asText()).isEqualTo(olderId);
         assertThat(list.get(1).path("id").asText()).isEqualTo(newerId);
+        // 다른 멤버가 상세로 봐도 같은 고정 시각(모임 공통)
+        mockMvc.perform(auth(get("/api/memos/" + olderId), other))
+                .andExpect(jsonPath("$.pinnedAt").value(pinned.path("pinnedAt").asText()));
 
         // 수정해도 고정은 남는다
         JsonNode edited = json(updateMemo(other, olderId, Map.of("title", "공지 수정", "content", "c2")));
@@ -588,18 +591,44 @@ class MemoFriendScheduleIntegrationTest {
                 .andExpect(jsonPath("$.isFavorite").value(true));
         mockMvc.perform(auth(get("/api/memos/favorites"), other)).andExpect(jsonPath("$[0].id").value(newerId));
 
-        // 개인 메모: 작성자만 고정, 공유받은 사람에게는 고정이 안 보이고 고정할 수 없다(즐겨찾기는 된다)
+        // 개인 메모: 고정은 사람별. 작성자도 공유받은 사람도 고정할 수 있고, 서로의 고정은 보이지 않는다
         String personalId = createMemo(writer, Map.of("title", "내 메모", "content", "c")).path("id").asText();
-        createMemo(writer, Map.of("title", "더 새 메모", "content", "c"));
+        String newerPersonalId = createMemo(writer, Map.of("title", "더 새 메모", "content", "c")).path("id").asText();
         mockMvc.perform(jsonBody(auth(post("/api/memos/" + personalId + "/share"), writer), Map.of("friendIds", List.of(other.userId()))))
                 .andExpect(status().isOk());
+        // 나중에 공유한 메모가 '공유받은 메모' 목록의 맨 위(공유 시각 최신순)
+        mockMvc.perform(jsonBody(auth(post("/api/memos/" + newerPersonalId + "/share"), writer), Map.of("friendIds", List.of(other.userId()))))
+                .andExpect(status().isOk());
         mockMvc.perform(auth(put("/api/memos/" + personalId + "/pin"), writer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isNotEmpty())
                 .andExpect(jsonPath("$.permissions.pin").value(true));
+        // 비교 기준은 DB 에서 다시 읽은 값
+        String writerPinnedAt = json(mockMvc.perform(auth(get("/api/memos/" + personalId), writer)).andReturn())
+                .path("pinnedAt").asText();
         mockMvc.perform(auth(get("/api/memos"), writer)).andExpect(jsonPath("$[0].id").value(personalId));
-        mockMvc.perform(auth(put("/api/memos/" + personalId + "/pin"), other)).andExpect(status().isForbidden());
+
+        // 공유받은 사람에게 작성자의 고정은 안 보이지만 자기 고정 버튼은 있다
         mockMvc.perform(auth(get("/api/memos/" + personalId), other))
                 .andExpect(jsonPath("$.pinnedAt").isEmpty())
-                .andExpect(jsonPath("$.permissions.pin").value(false));
+                .andExpect(jsonPath("$.permissions.pin").value(true));
+        mockMvc.perform(auth(get("/api/memos/shared"), other)).andExpect(jsonPath("$[0].id").value(newerPersonalId));
+        // 공유받은 사람이 고정하면 자기 '공유받은 메모' 목록 맨 위
+        mockMvc.perform(auth(put("/api/memos/" + personalId + "/pin"), other)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isNotEmpty());
+        mockMvc.perform(auth(get("/api/memos/shared"), other)).andExpect(jsonPath("$[0].id").value(personalId));
+        // 작성자의 고정 시각은 그대로
+        mockMvc.perform(auth(get("/api/memos/" + personalId), writer))
+                .andExpect(jsonPath("$.pinnedAt").value(writerPinnedAt));
+        // 작성자가 해제해도 공유받은 사람의 고정은 남는다
+        mockMvc.perform(auth(delete("/api/memos/" + personalId + "/pin"), writer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isEmpty());
+        mockMvc.perform(auth(get("/api/memos"), writer)).andExpect(jsonPath("$[0].id").value(newerPersonalId));
+        mockMvc.perform(auth(get("/api/memos/" + personalId), other)).andExpect(jsonPath("$.pinnedAt").isNotEmpty());
+        mockMvc.perform(auth(get("/api/memos/shared"), other)).andExpect(jsonPath("$[0].id").value(personalId));
+        // 공유받은 사람이 해제하면 원래 순서
+        mockMvc.perform(auth(delete("/api/memos/" + personalId + "/pin"), other)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isEmpty());
+        mockMvc.perform(auth(get("/api/memos/shared"), other)).andExpect(jsonPath("$[0].id").value(newerPersonalId));
         mockMvc.perform(auth(put("/api/memos/" + personalId + "/favorite"), other)).andExpect(status().isOk());
 
         // 토픽: 작성자·방장만 고정, 목록 맨 위, canPin 은 보는 사람 기준

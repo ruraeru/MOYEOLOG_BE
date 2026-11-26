@@ -64,6 +64,7 @@ public class GroupService {
     private final DatePollRepository datePollRepository;
     private final DatePollVoteRepository datePollVoteRepository;
     private final MemoGroupShareRepository memoGroupShareRepository;
+    private final MemoPinRepository memoPinRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     /** 프론트 lib/constants.ts THEME_COLORS 의 키 */
@@ -534,6 +535,8 @@ public class GroupService {
         datePollVoteRepository.deleteAllByGroupAndUser(groupId, targetMemberId);
         // 내보내진 사람이 이 모임에 공유한 개인 메모는 거둔다.
         memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, targetMemberId);
+        // 이 모임으로 공유받아 고정한 남의 개인 메모는 더 못 읽으므로 고정을 지운다.
+        memoPinRepository.deleteByUserIdAndGroupSharedMemos(targetMemberId, groupId);
 
         if (!groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, targetMemberId)) {
             groupBlockRepository.save(GroupBlock.builder()
@@ -570,6 +573,8 @@ public class GroupService {
         datePollVoteRepository.deleteAllByGroupAndUser(groupId, userId);
         // 나간 사람이 이 모임에 공유한 개인 메모는 거둔다.
         memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, userId);
+        // 이 모임으로 공유받아 고정한 남의 개인 메모는 더 못 읽으므로 고정을 지운다.
+        memoPinRepository.deleteByUserIdAndGroupSharedMemos(userId, groupId);
         // 나간 사람이 보낸 대기 초대는 더 이상 유효하지 않다.
         groupInvitationRepository.deletePendingFromInviter(groupId, userId);
         changes.publish(eventPublisher);

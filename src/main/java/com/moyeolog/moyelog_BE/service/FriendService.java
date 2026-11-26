@@ -19,6 +19,7 @@ import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.repository.FriendRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.MemoFavoriteRepository;
+import com.moyeolog.moyelog_BE.repository.MemoPinRepository;
 import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
 import com.moyeolog.moyelog_BE.repository.ScheduleRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
@@ -46,6 +47,7 @@ public class FriendService {
     private final UserRepository userRepository;
     private final MemoShareRepository memoShareRepository;
     private final MemoFavoriteRepository memoFavoriteRepository;
+    private final MemoPinRepository memoPinRepository;
     private final ScheduleRepository scheduleRepository;
     private final GroupMemberRepository groupMemberRepository;
     private final ApplicationEventPublisher eventPublisher;
@@ -196,6 +198,8 @@ public class FriendService {
         if (memoIds.isEmpty()) return;
         // 모임 메모라 여전히 읽을 수 있는 경우는 그대로 둔다.
         memoFavoriteRepository.deleteUnreadableByUserIdAndMemoIds(userId, memoIds);
+        // 개인 메모의 고정은 사용자별이다. 공유가 끊긴 메모의 고정도 지운다.
+        memoPinRepository.deleteByUserIdAndMemoIds(userId, memoIds);
     }
 
     private void removePersonalParticipation(UUID authorId, UUID participantId, ChangeEvents changes) {

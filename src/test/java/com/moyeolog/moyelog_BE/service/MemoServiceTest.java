@@ -3,8 +3,11 @@ package com.moyeolog.moyelog_BE.service;
 import com.moyeolog.moyelog_BE.dto.MemoRequest;
 import com.moyeolog.moyelog_BE.dto.MemoResponse;
 import com.moyeolog.moyelog_BE.dto.MemoShareRequest;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
+import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.entity.Memo;
 import com.moyeolog.moyelog_BE.entity.MemoFavorite;
+import com.moyeolog.moyelog_BE.entity.MemoPin;
 import com.moyeolog.moyelog_BE.entity.MemoShare;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
@@ -13,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -20,12 +24,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -45,6 +52,7 @@ class MemoServiceTest {
     @Mock private ScheduleRepository scheduleRepository;
     @Mock private FriendRepository friendRepository;
     @Mock private MemoFavoriteRepository memoFavoriteRepository;
+    @Mock private MemoPinRepository memoPinRepository;
     @Mock private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
@@ -94,6 +102,7 @@ class MemoServiceTest {
 
         verify(memoRepository).delete(withImage);
         verify(memoFavoriteRepository).deleteAllByMemo(withImage);
+        verify(memoPinRepository).deleteAllByMemoId(memoId);
         verify(fileService).deleteFileAfterCommit("/uploads/a.png");
     }
 
@@ -151,15 +160,60 @@ class MemoServiceTest {
         verify(memoFavoriteRepository).save(any(MemoFavorite.class));
     }
 
+    /** pinMemo 가 잠금 조회·일반 조회 중 무엇을 쓰든 같은 메모를 돌려준다. */
+    private void stubMemoLookup(Memo m) {
+        lenient().when(memoRepository.findByIdForUpdate(m.getId())).thenReturn(Optional.of(m));
+        lenient().when(memoRepository.findById(m.getId())).thenReturn(Optional.of(m));
+    }
+
     @Test
-    @DisplayName("고정 - 남의 개인 메모(공유받은 메모)는 고정할 수 없다(403)")
-    void pinMemo_NotAuthor_Forbidden() {
+    @DisplayName("고정 - 읽을 수 없는 남의 개인 메모는 고정할 수 없다(403)")
+    void pinMemo_Unreadable_Forbidden() {
         User other = User.builder().id(UUID.randomUUID()).nickname("other").build();
-        given(memoRepository.findByIdForUpdate(memoId)).willReturn(Optional.of(memo));
+        stubMemoLookup(memo);
         given(userRepository.findById(other.getId())).willReturn(Optional.of(other));
 
         assertThatThrownBy(() -> memoService.pinMemo(other.getId(), memoId, true))
                 .isInstanceOf(UnauthorizedAccessException.class);
+        verify(memoPinRepository, never()).save(any(MemoPin.class));
+        verify(memoRepository, never()).updatePinnedAt(any(), any());
+    }
+
+    @Test
+    @DisplayName("고정 - 공유받은 사람도 개인 메모를 고정한다: 자기 memo_pins 에만 저장, memos.pinned_at 은 그대로, 본인에게만 memos 알림")
+    void pinMemo_SharedRecipient_PinsForSelf() {
+        User recipient = User.builder().id(UUID.randomUUID()).nickname("r").build();
+        stubMemoLookup(memo);
+        given(userRepository.findById(recipient.getId())).willReturn(Optional.of(recipient));
+        given(memoShareRepository.existsByMemo_IdAndSharedTo_Id(memoId, recipient.getId())).willReturn(true);
+
+        memoService.pinMemo(recipient.getId(), memoId, true);
+
+        ArgumentCaptor<MemoPin> saved = ArgumentCaptor.forClass(MemoPin.class);
+        verify(memoPinRepository).save(saved.capture());
+        assertThat(saved.getValue().getUser().getId()).isEqualTo(recipient.getId());
+        assertThat(saved.getValue().getMemo().getId()).isEqualTo(memoId);
+        verify(memoRepository, never()).updatePinnedAt(any(), any());
+        assertThat(memo.getPinnedAt()).isNull();
+        // 개인 고정은 본인에게만 보이므로 작성자에게는 알리지 않는다
+        ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher, atLeastOnce()).publishEvent(events.capture());
+        assertThat(events.getAllValues()).containsOnly(ChangeEvent.of(Set.of(recipient.getId()), LiveTopics.MEMOS));
+    }
+
+    @Test
+    @DisplayName("고정 해제 - 공유받은 사람은 자기 고정만 지운다")
+    void pinMemo_SharedRecipient_Unpin() {
+        User recipient = User.builder().id(UUID.randomUUID()).nickname("r").build();
+        stubMemoLookup(memo);
+        given(userRepository.findById(recipient.getId())).willReturn(Optional.of(recipient));
+        given(memoShareRepository.existsByMemo_IdAndSharedTo_Id(memoId, recipient.getId())).willReturn(true);
+        lenient().when(memoPinRepository.existsByUser_IdAndMemo_Id(recipient.getId(), memoId)).thenReturn(true);
+
+        memoService.pinMemo(recipient.getId(), memoId, false);
+
+        verify(memoPinRepository).deleteByUserIdAndMemoId(recipient.getId(), memoId);
+        verify(memoPinRepository, never()).save(any(MemoPin.class));
         verify(memoRepository, never()).updatePinnedAt(any(), any());
     }
 
@@ -289,6 +343,8 @@ class MemoServiceTest {
         verify(memoShareRepository).deleteByMemoIdAndUserId(memoId, recipientId);
         // 받은 사람의 즐겨찾기도 정리된다
         verify(memoFavoriteRepository).deleteByUserIdAndMemoId(recipientId, memoId);
+        // 받은 사람의 고정도 정리된다
+        verify(memoPinRepository).deleteByUserIdAndMemoId(recipientId, memoId);
 
         assertThatThrownBy(() -> memoService.unshareMemo(UUID.randomUUID(), memoId, recipientId))
                 .isInstanceOf(UnauthorizedAccessException.class);
@@ -450,6 +506,8 @@ class MemoServiceTest {
         assertThat(response.getTaggedSchedules()).isEmpty();
         MemoResponse.Permissions p = response.getPermissions();
         assertThat(p.isEdit() || p.isDelete() || p.isShare() || p.isTag() || p.isAnalyze()).isFalse();
+        // 개인 메모 고정은 사람별이라 공유받은 사람도 할 수 있다
+        assertThat(p.isPin()).isTrue();
     }
 
     @Test
