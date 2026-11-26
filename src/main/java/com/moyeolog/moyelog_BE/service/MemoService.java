@@ -115,22 +115,33 @@ public class MemoService {
         }
 
         List<User> newlyShared = new ArrayList<>();
+        List<User> permissionChanged = new ArrayList<>();
         for (User friend : friends) {
             List<MemoShare> existing = memoShareRepository.findAllByMemo_IdAndSharedTo_Id(memo.getId(), friend.getId());
             if (existing.isEmpty()) {
                 memoShareRepository.save(MemoShare.builder().memo(memo).sharedTo(friend).canEdit(canEdit).build());
                 newlyShared.add(friend);
             } else {
+                if (existing.stream().anyMatch(share -> share.isCanEdit() != canEdit)) {
+                    permissionChanged.add(friend);
+                }
                 existing.forEach(share -> share.changeCanEdit(canEdit));
             }
         }
         ConcurrentUpdates.flush(memoShareRepository::flush);
         audience(memo).publish(eventPublisher);
 
-        String message = memo.getAuthor().getNickname() + "님이 '" + shortTitle(memo.getTitle()) + "' 메모를 공유했어요.";
+        // 공유 알림에 권한을 적고, 이미 공유한 사람의 권한이 바뀌면 그것도 알린다 (알림 종류는 MEMO_SHARED 그대로).
+        String prefix = memo.getAuthor().getNickname() + "님이 '" + shortTitle(memo.getTitle()) + "' 메모를 ";
+        String sharedMessage = prefix + (canEdit ? "수정할 수 있게 공유했어요." : "공유했어요.");
+        String changedMessage = prefix + (canEdit ? "수정할 수 있게 바꿨어요." : "읽기만 할 수 있게 바꿨어요.");
         for (User friend : newlyShared) {
             eventPublisher.publishEvent(new NotificationEvent(friend.getId(), authorId,
-                    NotificationType.MEMO_SHARED, message, "/memo/" + memo.getId()));
+                    NotificationType.MEMO_SHARED, sharedMessage, "/memo/" + memo.getId()));
+        }
+        for (User friend : permissionChanged) {
+            eventPublisher.publishEvent(new NotificationEvent(friend.getId(), authorId,
+                    NotificationType.MEMO_SHARED, changedMessage, "/memo/" + memo.getId()));
         }
     }
 

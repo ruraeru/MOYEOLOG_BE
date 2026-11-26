@@ -239,6 +239,29 @@ class NotificationIntegrationTest {
     }
 
     @Test
+    @DisplayName("메모 공유 알림: 수정 가능 여부를 적고, 이미 공유한 친구의 권한이 바뀌면 다시 알림 (같으면 알리지 않음)")
+    void memoShare_notifiesPermission() throws Exception {
+        Session author = login(mockMvc, "공유한이");
+        Session friend = login(mockMvc, "공유받은이");
+        makeFriends(mockMvc, author, friend);
+        String memoId = json(mockMvc.perform(jsonBody(auth(post("/api/memos"), author),
+                        Map.of("title", "여행", "content", "c")))
+                .andExpect(status().is2xxSuccessful()).andReturn()).path("id").asText();
+        String shareUrl = "/api/memos/" + memoId + "/share";
+
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author),
+                Map.of("friendIds", java.util.List.of(friend.userId()), "canEdit", true))).andExpect(status().isOk());
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author),
+                Map.of("friendIds", java.util.List.of(friend.userId()), "canEdit", true))).andExpect(status().isOk());
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author),
+                Map.of("friendIds", java.util.List.of(friend.userId()), "canEdit", false))).andExpect(status().isOk());
+
+        assertThat(texts(list(friend), "message")).containsExactly(
+                "공유한이님이 '여행' 메모를 읽기만 할 수 있게 바꿨어요.",
+                "공유한이님이 '여행' 메모를 수정할 수 있게 공유했어요.");
+    }
+
+    @Test
     @DisplayName("safeLink: 앱 내부 경로만 허용")
     void safeLink() {
         assertThat(NotificationService.safeLink("/groups/1?topic=2")).isEqualTo("/groups/1?topic=2");

@@ -339,6 +339,21 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("공유할 친구가 없으면 빈 배열이든 나만 넣었든 같은 400 문구")
+    void share_emptyAndSelfSameMessage() throws Exception {
+        Session author = login("semptya");
+        String memoId = createMemo(author, Map.of("title", "t", "content", "c")).path("id").asText();
+        String shareUrl = "/api/memos/" + memoId + "/share";
+        String msg = "공유할 친구를 한 명 이상 선택해 주세요.";
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(msg));
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of(author.userId()))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(msg));
+    }
+
+    @Test
     @DisplayName("친구 공유 권한: 기본 읽기 전용, '수정 가능'이면 고칠 수 있음(삭제·재공유·해제 불가), 다시 공유하면 권한만 바뀜")
     void share_canEditPerFriend() throws Exception {
         Session author = login("sauthor");
