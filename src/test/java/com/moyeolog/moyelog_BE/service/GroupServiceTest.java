@@ -1,6 +1,7 @@
 package com.moyeolog.moyelog_BE.service;
 
 import com.moyeolog.moyelog_BE.dto.GroupInviteRequest;
+import com.moyeolog.moyelog_BE.dto.GroupInviteResponse;
 import com.moyeolog.moyelog_BE.dto.GroupRequest;
 import com.moyeolog.moyelog_BE.dto.GroupResponse;
 import com.moyeolog.moyelog_BE.entity.Group;
@@ -603,9 +604,11 @@ class GroupServiceTest {
         given(userRepository.findById(invitee.getId())).willReturn(Optional.of(invitee));
         given(friendRepository.areFriends(userId, invitee.getId())).willReturn(true);
 
-        groupService.inviteMembers(userId, groupId,
+        GroupInviteResponse res = groupService.inviteMembers(userId, groupId,
                 GroupInviteRequest.builder().userIds(List.of(invitee.getId(), invitee.getId())).build());
 
+        assertThat(res.getInvitedCount()).isEqualTo(1);
+        assertThat(res.getAlreadyInvitedCount()).isZero();
         verify(groupInvitationRepository, times(1)).save(any(GroupInvitation.class));
         ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
         verify(eventPublisher).publishEvent(event.capture());
@@ -639,8 +642,11 @@ class GroupServiceTest {
         given(friendRepository.areFriends(userId, invitee.getId())).willReturn(true);
         given(groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)).willReturn(true);
 
-        groupService.inviteMembers(userId, groupId, GroupInviteRequest.builder().userIds(List.of(invitee.getId())).build());
+        GroupInviteResponse res = groupService.inviteMembers(userId, groupId, GroupInviteRequest.builder().userIds(List.of(invitee.getId())).build());
         verify(groupInvitationRepository, never()).save(any());
+        // 건너뛴 사실을 응답으로 알려 화면이 "보냈어요" 라고 하지 않게 한다
+        assertThat(res.getInvitedCount()).isZero();
+        assertThat(res.getAlreadyInvitedCount()).isEqualTo(1);
     }
 
     @Test
