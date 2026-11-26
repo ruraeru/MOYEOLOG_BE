@@ -102,8 +102,8 @@ public class AccountMailer {
     }
 
     public void sendPasswordReset(String to, String token) {
-        queue(to, "[모여로그] 비밀번호 설정 링크",
-                "아래 링크에서 새 비밀번호를 설정할 수 있어요. 링크는 30분 동안 쓸 수 있어요. 비밀번호를 바꾸면 모든 기기에서 로그아웃돼요.",
+        queue(to, "[모여로그] 새 비밀번호 정하기 링크",
+                "아래 버튼을 눌러 새 비밀번호를 정해 주세요. 링크는 30분 동안 쓸 수 있어요. 비밀번호를 바꾸면 모든 기기에서 로그아웃돼요.",
                 link("/reset-password", token, null),
                 "요청하지 않았다면 이 메일을 무시해 주세요. 비밀번호는 바뀌지 않아요.");
     }
@@ -128,7 +128,7 @@ public class AccountMailer {
         queueSecurityNotice(to, "[모여로그] 비밀번호가 설정됐어요",
                 "모여로그 계정의 비밀번호가 방금 설정되거나 바뀌었어요.",
                 null,
-                "본인이 아니라면 카카오로 로그인해 설정의 '계정 및 보안'을 확인하거나, 로그인 화면의 '비밀번호를 잊었어요'로 비밀번호를 다시 설정해 주세요.");
+                "본인이 아니라면 바로 로그인 화면의 '비밀번호를 잊었어요'로 비밀번호를 다시 설정해 주세요. 다시 설정하면 모든 기기에서 로그아웃돼요.");
     }
 
     /** 이메일이 바뀌었을 때 예전 인증된 이메일로(링크 없음). */
@@ -195,14 +195,33 @@ public class AccountMailer {
             helper.setTo(to);
             helper.setSubject(subject);
             String text = body + "\n\n" + (link == null ? "" : link + "\n\n") + footer + "\n";
-            String html = "<p>" + HtmlUtils.htmlEscape(body) + "</p>"
-                    + (link == null ? "" : "<p><a href=\"" + HtmlUtils.htmlEscape(link) + "\">"
-                    + HtmlUtils.htmlEscape(link) + "</a></p>")
-                    + "<p>" + HtmlUtils.htmlEscape(footer) + "</p>";
+            String html = htmlBody(subject, body, link, footer);
             helper.setText(text, html);
             sender.send(message);
         } catch (Exception e) {
             log.warn("계정 메일 발송 실패: {}", e.getClass().getSimpleName());
         }
+    }
+
+    /** 서비스 이름 + 본문 + 누르기 쉬운 버튼(아래에 복사용 주소) + 맺음말. 색은 화면 토큰(갈색 accent)과 같다. */
+    static String htmlBody(String subject, String body, String link, String footer) {
+        String font = "font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;";
+        String button = link == null ? "" : "<p style=\"margin:24px 0 8px\"><a href=\"" + HtmlUtils.htmlEscape(link) + "\""
+                + " style=\"display:inline-block;padding:12px 20px;border-radius:10px;background:#573c2d;color:#ffffff;"
+                + "text-decoration:none;font-size:15px\">" + HtmlUtils.htmlEscape(buttonLabel(subject)) + "</a></p>"
+                + "<p style=\"margin:0 0 16px;font-size:12px;color:#8a837c;word-break:break-all\">버튼이 안 눌리면 이 주소를 붙여 넣어 주세요: "
+                + HtmlUtils.htmlEscape(link) + "</p>";
+        return "<div style=\"" + font + "max-width:480px;margin:0 auto;padding:24px 16px;color:#2b2622;line-height:1.6\">"
+                + "<p style=\"margin:0 0 16px;font-size:18px;color:#573c2d\">모여로그</p>"
+                + "<p style=\"margin:0;font-size:15px\">" + HtmlUtils.htmlEscape(body) + "</p>"
+                + button
+                + "<p style=\"margin:16px 0 0;font-size:13px;color:#57534e\">" + HtmlUtils.htmlEscape(footer) + "</p></div>";
+    }
+
+    private static String buttonLabel(String subject) {
+        if (subject.contains("비밀번호") || subject.contains("이미 가입")) {
+            return "새 비밀번호 정하기";
+        }
+        return "이메일 확인하기";
     }
 }

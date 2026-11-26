@@ -47,6 +47,13 @@ public class AccountController {
         return ResponseEntity.noContent().build();
     }
 
+    /** 재설정 링크가 아직 쓸 수 있는지(소모하지 않음). 화면이 열 때 불러 두 칸을 다 쓰기 전에 알려 준다. */
+    @PostMapping("/api/account/password-reset/check")
+    public ResponseEntity<Void> passwordResetCheck(@RequestBody AccountDtos.TokenRequest request) {
+        accountService.checkPasswordResetToken(request.token());
+        return ResponseEntity.noContent().build();
+    }
+
     @PutMapping("/api/users/me/password")
     public ResponseEntity<Void> changePassword(@AuthenticationPrincipal String userId,
                                                @RequestBody AccountDtos.PasswordChangeRequest request) {

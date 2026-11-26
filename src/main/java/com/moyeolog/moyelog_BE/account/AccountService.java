@@ -195,7 +195,22 @@ public class AccountService {
         v.markUsed(now);
         verificationRepository.markAllUsed(user.getId(), Purpose.PASSWORD, now);
         authService.logoutAll(user.getId());
+        authService.clearLoginFailures(user.getEmail());
         mailer.sendPasswordChangedNotice(user.getEmail());
+    }
+
+    /** 재설정 링크를 열었을 때 미리 확인(소모하지 않는다). 쓸 수 없으면 confirm 과 같은 400. */
+    @Transactional
+    public void checkPasswordResetToken(String token) {
+        EmailVerification v = usableToken(token, LocalDateTime.now());
+        if (v.getPurpose() != Purpose.PASSWORD) {
+            throw new BadRequestException(INVALID_TOKEN_MESSAGE);
+        }
+        User user = userRepository.findById(v.getUserId())
+                .orElseThrow(() -> new BadRequestException(INVALID_TOKEN_MESSAGE));
+        if (user.getEmailVerifiedAt() == null || !sameEmail(v.getEmail(), user.getEmail())) {
+            throw new BadRequestException(INVALID_TOKEN_MESSAGE);
+        }
     }
 
     // ─── 로그인한 사용자 (/api/users/me/**) ─────────────────────────
@@ -276,6 +291,9 @@ public class AccountService {
     public static void validatePassword(String password) {
         if (password == null || password.isEmpty()) {
             throw new BadRequestException("비밀번호를 입력해 주세요.");
+        }
+        if (password.isBlank()) {
+            throw new BadRequestException("비밀번호를 공백만으로 정할 수 없어요.");
         }
         if (password.codePointCount(0, password.length()) < 8) {
             throw new BadRequestException("비밀번호는 8자 이상이어야 해요.");
