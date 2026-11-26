@@ -437,6 +437,9 @@ public class GroupService {
                         .inviterNickname(i.getInviter().getNickname())
                         .status(i.getStatus())
                         .invitedAt(i.getInvitedAt())
+                        .groupDescription(i.getGroup().getDescription())
+                        .memberCount(distinctMembers(i.getGroup()).size())
+                        .ownerNickname(i.getGroup().getCreatedBy().getNickname())
                         .build())
                 .collect(Collectors.toList());
     }

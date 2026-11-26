@@ -1,5 +1,6 @@
 package com.moyeolog.moyelog_BE.service;
 
+import com.moyeolog.moyelog_BE.dto.GroupInvitationResponse;
 import com.moyeolog.moyelog_BE.dto.GroupInviteRequest;
 import com.moyeolog.moyelog_BE.dto.GroupInviteResponse;
 import com.moyeolog.moyelog_BE.dto.GroupRequest;
@@ -492,6 +493,25 @@ class GroupServiceTest {
                 .invitee(user)
                 .status(status)
                 .build();
+    }
+
+    @Test
+    @DisplayName("받은 초대 목록 - 수락 전에 볼 모임 소개·인원·방장을 함께 준다")
+    void getMyInvitations_IncludesGroupInfo() {
+        User owner = User.builder().id(UUID.randomUUID()).nickname("방장").build();
+        Group group = Group.builder().id(UUID.randomUUID()).name("모임").description("소개").createdBy(owner).build();
+        GroupInvitation inv = invitation(group, InvitationStatus.PENDING);
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        given(groupInvitationRepository.findByInviteeAndStatus(user, InvitationStatus.PENDING)).willReturn(List.of(inv));
+        given(groupMemberRepository.findByGroup(group)).willReturn(List.of(
+                GroupMember.builder().group(group).user(owner).build(),
+                GroupMember.builder().group(group).user(User.builder().id(UUID.randomUUID()).build()).build()));
+
+        GroupInvitationResponse res = groupService.getMyInvitations(userId).get(0);
+
+        assertThat(res.getGroupDescription()).isEqualTo("소개");
+        assertThat(res.getMemberCount()).isEqualTo(2);
+        assertThat(res.getOwnerNickname()).isEqualTo("방장");
     }
 
     private void stubInvitationLock(Group group, GroupInvitation invitation) {
