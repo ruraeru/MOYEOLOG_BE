@@ -77,8 +77,8 @@ public class GroupNoticeService {
         noticeRepository.flush();
 
         List<User> members = access.members(groupId);
-        access.notify(members, userId, groupId, notice.getId(), nickname(members, userId) + "님이 새 공지를 올렸어요: '"
-                + shortTitle(notice) + "'" + (request.poll() != null ? " 투표에 참여해 주세요." : ""));
+        access.notify(members, userId, groupId, notice.getId(), nickname(members, userId) + "님이 새 공지를 올렸어요: '" + shortTitle(notice)
+                + "'." + (request.poll() != null ? " 투표에 참여해 주세요." : ""));
         access.publishChange(groupId, members);
         return detail(group, notice, members, userId);
     }
@@ -196,6 +196,8 @@ public class GroupNoticeService {
     private static final Pattern CODE_FENCE = Pattern.compile("(?m)^\\s*(```|~~~).*$");
     private static final Pattern IMAGE = Pattern.compile("!\\[([^\\]]*)]\\([^)]*\\)");
     private static final Pattern LINK = Pattern.compile("\\[([^\\]]*)]\\([^)]*\\)");
+    // <script>·<style> 은 상세 화면에 보이지 않으므로 안의 글자까지 지운다
+    private static final Pattern SCRIPT_STYLE = Pattern.compile("(?is)<(script|style)\\b[^>]*>.*?(</\\1\\s*>|$)");
     private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
     private static final Pattern LINE_PREFIX = Pattern.compile(
             "(?m)^\\s*(#{1,6}\\s+|>+\\s?|[-*+]\\s+\\[[ xX]]\\s+|[-*+]\\s+|\\d+[.)]\\s+)");
@@ -209,6 +211,7 @@ public class GroupNoticeService {
         String text = CODE_FENCE.matcher(content).replaceAll(" ");
         text = IMAGE.matcher(text).replaceAll("$1");
         text = LINK.matcher(text).replaceAll("$1");
+        text = SCRIPT_STYLE.matcher(text).replaceAll(" ");
         text = HTML_TAG.matcher(text).replaceAll(" ");
         text = RULE.matcher(text).replaceAll(" ");
         text = LINE_PREFIX.matcher(text).replaceAll("");
