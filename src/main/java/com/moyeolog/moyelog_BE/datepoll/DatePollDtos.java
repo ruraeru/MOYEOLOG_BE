@@ -43,9 +43,11 @@ public final class DatePollDtos {
     public record PollUser(UUID id, String nickname, String profileImage) {
     }
 
+    /** canManage: 보는 사람이 재촉·정하기·지우기를 할 수 있다(만든 사람 또는 모임장). */
     public record DatePollSummary(UUID id, String title, LocalDate startDate, LocalDate endDate,
                                   DatePoll.Status status, int respondedCount, int memberCount, boolean myResponded,
-                                  LocalDate confirmedDate, UUID scheduleId, LocalDateTime createdAt) {
+                                  LocalDate confirmedDate, UUID scheduleId, LocalDateTime createdAt,
+                                  boolean canManage) {
     }
 
     public record DateTally(LocalDate date, int count, List<PollUser> voters) {
@@ -62,6 +64,7 @@ public final class DatePollDtos {
                                  DatePoll.Status status, int respondedCount, int memberCount, boolean myResponded,
                                  LocalDate confirmedDate, UUID scheduleId, LocalDateTime createdAt,
                                  PollUser creator, List<LocalDate> myDates, List<DateTally> dates, List<LocalDate> best,
-                                 List<PollUser> responded, List<PollUser> notResponded, Ai ai) {
+                                 List<PollUser> responded, List<PollUser> notResponded, Ai ai,
+                                 boolean canManage) {
     }
 }
