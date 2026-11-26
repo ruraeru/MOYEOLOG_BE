@@ -207,6 +207,43 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("친구 요청 409 문구는 경우마다 다르고, 친구 목록은 닉네임순, 요청 알림은 받은 요청 탭으로 간다")
+    void friends_conflictMessagesOrderAndLink() throws Exception {
+        Session a = login("나요청");
+        Session b = login("다받음");
+        Session c = login("가친구");
+
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isOk());
+        // 보낸 사람이 다시 보냄
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 친구 신청을 보냈어요. 상대가 수락하면 친구가 돼요."));
+        // 받은 사람이 거꾸로 보냄 → 받은 요청에서 수락하라고 안내
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), b), Map.of("customId", a.customId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 나에게 친구 신청을 보냈어요. 받은 요청에서 수락해 주세요."));
+
+        JsonNode notes = json(mockMvc.perform(auth(get("/api/notifications"), b)).andExpect(status().isOk()).andReturn());
+        boolean linked = false;
+        for (JsonNode n : notes) {
+            if ("FRIEND_REQUEST".equals(n.path("type").asText())) linked = "/friends?tab=received".equals(n.path("link").asText());
+        }
+        assertThat(linked).isTrue();
+
+        String requestId = json(mockMvc.perform(auth(get("/api/friends/requests"), b)).andReturn()).get(0).path("id").asText();
+        mockMvc.perform(auth(put("/api/friends/accept/" + requestId), b)).andExpect(status().isOk());
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 친구예요."));
+
+        makeFriends(c, a);
+        JsonNode friends = json(mockMvc.perform(auth(get("/api/friends"), a)).andExpect(status().isOk()).andReturn());
+        assertThat(friends.get(0).path("nickname").asText()).isEqualTo("가친구");
+        assertThat(friends.get(1).path("nickname").asText()).isEqualTo("다받음");
+    }
+
+    @Test
     @DisplayName("친구를 끊으면 개인 일정 참여자에서도 빠지고(모임 일정은 그대로), 공유로 생긴 즐겨찾기도 지워진다")
     void unfriend_removesPersonalParticipationAndFavorites() throws Exception {
         Session jiwoo = login("jiwoo");
