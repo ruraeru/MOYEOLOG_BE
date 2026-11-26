@@ -18,6 +18,8 @@ public interface EmailVerificationRepository extends JpaRepository<EmailVerifica
     @Query("SELECT v FROM EmailVerification v WHERE v.tokenHash = :tokenHash")
     Optional<EmailVerification> findByTokenHashForUpdate(@Param("tokenHash") String tokenHash);
 
+    Optional<EmailVerification> findByTokenHash(String tokenHash);
+
     /** 비밀번호를 바꾸면 그 사용자의 남은 PASSWORD 링크를 모두 못 쓰게 한다. */
     @Modifying(flushAutomatically = true)
     @Query("UPDATE EmailVerification v SET v.usedAt = :now WHERE v.userId = :userId "

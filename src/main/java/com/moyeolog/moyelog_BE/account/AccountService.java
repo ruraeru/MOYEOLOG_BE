@@ -42,6 +42,9 @@ public class AccountService {
 
     static final String INVALID_TOKEN_MESSAGE = "인증 링크가 올바르지 않거나 만료됐어요. 다시 요청해 주세요.";
     static final String WRONG_PASSWORD_MESSAGE = "비밀번호가 올바르지 않아요.";
+    static final String USED_TOKEN_MESSAGE = "이미 사용한 링크예요.";
+    static final String LOCKED_TOKEN_MESSAGE = "비밀번호를 여러 번 틀려 이 링크는 더 쓸 수 없어요. 가입을 다시 신청해 주세요.";
+    static final String EXPIRED_TOKEN_MESSAGE = "링크가 만료됐어요. 다시 요청해 주세요.";
     static final String WRONG_CURRENT_PASSWORD_MESSAGE = "현재 비밀번호가 올바르지 않아요.";
     static final String KAKAO_RELOGIN_MESSAGE = "보안을 위해 카카오로 다시 로그인한 뒤 10분 안에 다시 시도해 주세요.";
     private static final int KAKAO_RELOGIN_MINUTES = 10;
@@ -75,10 +78,8 @@ public class AccountService {
     @Transactional
     public void signup(String rawEmail, String password, String rawNickname) {
         String email = normalizeEmail(rawEmail);
-        String nickname = UserService.sanitizeNickname(rawNickname);
-        if (nickname.isEmpty()) {
-            throw new BadRequestException("닉네임을 입력해 주세요.");
-        }
+        // 프로필의 닉네임 수정과 같은 규칙(2~20자, 쓸 수 없는 문자 400). 고쳐서 받지 않는다.
+        String nickname = UserService.validateNickname(rawNickname);
         validatePassword(password);
         mailer.requireAvailable();
         // 비밀번호를 버리는 경우에도 해시해 응답 시간을 맞춘다.
@@ -116,7 +117,8 @@ public class AccountService {
             case SIGNUP -> {
                 if (!passwordMatches(password, v.getPasswordHash())) {
                     v.recordFailedAttempt(now);
-                    throw new BadRequestException(WRONG_PASSWORD_MESSAGE);
+                    int left = EmailVerification.MAX_FAILED_ATTEMPTS - v.getFailedAttempts();
+                    throw new BadRequestException(left > 0 ? wrongPasswordMessage(left) : LOCKED_TOKEN_MESSAGE);
                 }
                 if (verifiedOwner(v.getEmail()) != null) {
                     throw new ConflictException("이미 가입된 이메일이에요. 로그인해 주세요.");
@@ -148,6 +150,24 @@ public class AccountService {
             default -> throw new BadRequestException(INVALID_TOKEN_MESSAGE);
         }
         v.markUsed(now);
+        return new AccountDtos.VerifyResponse(v.getPurpose().name(), v.getEmail());
+    }
+
+    /** 틀린 비밀번호 문구. 남은 기회를 알려 준다(다 쓰면 그 링크는 못 쓴다). */
+    static String wrongPasswordMessage(int left) {
+        return WRONG_PASSWORD_MESSAGE + " 남은 기회 " + left + "번. 기억나지 않으면 가입을 다시 신청해 주세요.";
+    }
+
+    /**
+     * 메일 링크를 쓰지 않고 상태만 본다(/verify 화면이 열자마자 쓸 수 없는 링크를 알리고, 인증할 주소를 보여 주려고).
+     * 쓸 수 없으면 verify 와 같은 400 문구. 토큰을 가진 사람(메일 받은 사람)에게만 이메일을 준다.
+     */
+    @Transactional(readOnly = true)
+    public AccountDtos.VerifyResponse previewToken(String token) {
+        EmailVerification v = usableToken(token, LocalDateTime.now(), false);
+        if (v.getPurpose() == Purpose.PASSWORD) {
+            throw new BadRequestException(INVALID_TOKEN_MESSAGE);
+        }
         return new AccountDtos.VerifyResponse(v.getPurpose().name(), v.getEmail());
     }
 
@@ -277,6 +297,9 @@ public class AccountService {
         if (password == null || password.isEmpty()) {
             throw new BadRequestException("비밀번호를 입력해 주세요.");
         }
+        if (password.isBlank()) {
+            throw new BadRequestException("공백만으로는 비밀번호를 만들 수 없어요.");
+        }
         if (password.codePointCount(0, password.length()) < 8) {
             throw new BadRequestException("비밀번호는 8자 이상이어야 해요.");
         }
@@ -332,13 +355,24 @@ public class AccountService {
     }
 
     private EmailVerification usableToken(String token, LocalDateTime now) {
+        return usableToken(token, now, true);
+    }
+
+    /** 쓸 수 없는 링크는 까닭(이미 씀·비밀번호 여러 번 틀림·만료)을 나눠 알린다. 토큰을 가진 사람만 알 수 있는 정보다. */
+    private EmailVerification usableToken(String token, LocalDateTime now, boolean forUpdate) {
         if (token == null || token.isBlank() || token.length() > 100) {
             throw new BadRequestException(INVALID_TOKEN_MESSAGE);
         }
-        EmailVerification v = verificationRepository.findByTokenHashForUpdate(TokenHasher.sha256(token.trim()))
+        String hash = TokenHasher.sha256(token.trim());
+        EmailVerification v = (forUpdate ? verificationRepository.findByTokenHashForUpdate(hash)
+                : verificationRepository.findByTokenHash(hash))
                 .orElseThrow(() -> new BadRequestException(INVALID_TOKEN_MESSAGE));
         if (!v.usable(now)) {
-            throw new BadRequestException(INVALID_TOKEN_MESSAGE);
+            if (v.getUsedAt() != null) {
+                throw new BadRequestException(v.getFailedAttempts() >= EmailVerification.MAX_FAILED_ATTEMPTS
+                        ? LOCKED_TOKEN_MESSAGE : USED_TOKEN_MESSAGE);
+            }
+            throw new BadRequestException(EXPIRED_TOKEN_MESSAGE);
         }
         return v;
     }

@@ -35,6 +35,12 @@ public class AccountController {
         return ResponseEntity.ok(accountService.verify(request.token(), request.password(), userId));
     }
 
+    /** 메일 링크를 쓰지 않고 상태·이메일만 본다(SIGNUP·EMAIL). 쓸 수 없으면 400. */
+    @PostMapping("/api/account/verify/preview")
+    public ResponseEntity<AccountDtos.VerifyResponse> previewVerify(@RequestBody AccountDtos.VerifyRequest request) {
+        return ResponseEntity.ok(accountService.previewToken(request.token()));
+    }
+
     @PostMapping("/api/account/password-reset")
     public ResponseEntity<Map<String, Object>> passwordReset(@RequestBody AccountDtos.EmailRequest request) {
         accountService.requestPasswordReset(request.email());
