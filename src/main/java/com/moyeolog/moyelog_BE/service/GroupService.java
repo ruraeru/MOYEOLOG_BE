@@ -537,6 +537,8 @@ public class GroupService {
         memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, targetMemberId);
         // 이 모임으로 공유받아 고정한 남의 개인 메모는 더 못 읽으므로 고정을 지운다.
         memoPinRepository.deleteByUserIdAndGroupSharedMemos(targetMemberId, groupId);
+        // 이 모임의 모임 메모에 한 내 고정도 지운다(자기가 쓴 메모는 남긴다).
+        memoPinRepository.deleteByUserIdAndGroupMemos(targetMemberId, groupId);
 
         if (!groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, targetMemberId)) {
             groupBlockRepository.save(GroupBlock.builder()
@@ -575,6 +577,8 @@ public class GroupService {
         memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, userId);
         // 이 모임으로 공유받아 고정한 남의 개인 메모는 더 못 읽으므로 고정을 지운다.
         memoPinRepository.deleteByUserIdAndGroupSharedMemos(userId, groupId);
+        // 이 모임의 모임 메모에 한 내 고정도 지운다(자기가 쓴 메모는 남긴다).
+        memoPinRepository.deleteByUserIdAndGroupMemos(userId, groupId);
         // 나간 사람이 보낸 대기 초대는 더 이상 유효하지 않다.
         groupInvitationRepository.deletePendingFromInviter(groupId, userId);
         changes.publish(eventPublisher);
@@ -617,6 +621,8 @@ public class GroupService {
         UUID groupId = group.getId();
         // 모임 고정은 개인 메모의 고정이 아니므로 먼저 푼다.
         memoRepository.clearPinnedByGroupId(groupId);
+        // 모임 메모가 작성자의 개인 메모가 되므로 멤버들이 한 내 고정은 지우고 작성자 것만 남긴다(group_id 를 풀기 전에).
+        memoPinRepository.deleteNonAuthorPinsByGroupId(groupId);
         for (Memo memo : memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId)) {
             memo.detachFromGroup();
         }

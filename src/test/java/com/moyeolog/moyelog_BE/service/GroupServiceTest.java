@@ -241,6 +241,8 @@ class GroupServiceTest {
         verify(groupInvitationRepository).deletePendingFromInviter(groupId, targetUserId);
         // 이 모임으로 공유받아 고정한 개인 메모의 고정도 지운다
         verify(memoPinRepository).deleteByUserIdAndGroupSharedMemos(targetUserId, groupId);
+        // 그 모임의 모임 메모에 한 내 고정도 지운다
+        verify(memoPinRepository).deleteByUserIdAndGroupMemos(targetUserId, groupId);
         assertThat(group.getInviteCode()).isNotNull().isNotEqualTo("OLDCOD").hasSize(6);
         ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
         verify(eventPublisher).publishEvent(event.capture());
@@ -261,6 +263,7 @@ class GroupServiceTest {
                 .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
         verify(groupBlockRepository, never()).save(any());
         verify(memoPinRepository, never()).deleteByUserIdAndGroupSharedMemos(any(), any());
+        verify(memoPinRepository, never()).deleteByUserIdAndGroupMemos(any(), any());
     }
 
     @Test
@@ -294,10 +297,12 @@ class GroupServiceTest {
         groupService.leaveGroup(userId, otherGroupId);
         verify(groupInvitationRepository).deletePendingFromInviter(otherGroupId, userId);
         verify(memoPinRepository).deleteByUserIdAndGroupSharedMemos(userId, otherGroupId);
+        verify(memoPinRepository).deleteByUserIdAndGroupMemos(userId, otherGroupId);
         assertThatThrownBy(() -> groupService.leaveGroup(userId, otherGroupId))
                 .isInstanceOf(UnauthorizedAccessException.class);
         // 이미 나간 경우(두 번째 호출)는 고정을 다시 지우지 않는다
         verify(memoPinRepository, times(1)).deleteByUserIdAndGroupSharedMemos(userId, otherGroupId);
+        verify(memoPinRepository, times(1)).deleteByUserIdAndGroupMemos(userId, otherGroupId);
     }
 
     @Test
@@ -314,6 +319,20 @@ class GroupServiceTest {
         given(groupRepository.findByIdForUpdate(goneId)).willReturn(Optional.empty());
         assertThatThrownBy(() -> groupService.deleteGroup(userId, goneId))
                 .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("모임 삭제 - 모임 메모가 개인 메모로 돌아가기 전에 작성자 아닌 사람의 내 고정을 지우고 모임 고정을 푼다")
+    void deleteGroup_ClearsPins() {
+        UUID groupId = UUID.randomUUID();
+        Group group = ownedGroup(groupId);
+        given(groupRepository.findByIdForUpdate(groupId)).willReturn(Optional.of(group));
+
+        groupService.deleteGroup(userId, groupId);
+
+        verify(memoPinRepository).deleteNonAuthorPinsByGroupId(groupId);
+        verify(memoRepository).clearPinnedByGroupId(groupId);
+        verify(groupRepository).delete(group);
     }
 
     @Test

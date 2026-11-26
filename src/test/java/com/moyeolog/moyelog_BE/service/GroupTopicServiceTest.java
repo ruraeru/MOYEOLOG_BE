@@ -69,6 +69,37 @@ class GroupTopicServiceTest {
     }
 
     @Test
+    @DisplayName("삭제: 방장은 남의 토픽을 지울 수 있고, 작성자도 방장도 아닌 멤버는 403")
+    void deleteTopic_OwnerAllowed_OtherForbidden() {
+        User author = User.builder().id(UUID.randomUUID()).nickname("author").build();
+        GroupTopic topic = GroupTopic.builder().id(UUID.randomUUID()).title("t").content("c").author(author).group(group).build();
+        given(groupTopicRepository.findByIdForUpdate(topic.getId())).willReturn(Optional.of(topic));
+
+        // userId 는 작성자도 방장도 아니다
+        assertThatThrownBy(() -> groupTopicService.deleteTopic(userId, topic.getId()))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(groupTopicRepository, org.mockito.Mockito.never()).delete(any(GroupTopic.class));
+
+        groupTopicService.deleteTopic(group.getCreatedBy().getId(), topic.getId());
+        verify(groupTopicRepository).delete(topic);
+    }
+
+    @Test
+    @DisplayName("canDelete: 작성자·방장 true, 그 밖의 멤버 false")
+    void topicResponse_CanDelete() {
+        User author = User.builder().id(UUID.randomUUID()).nickname("author").build();
+        GroupTopic topic = GroupTopic.builder().id(UUID.randomUUID()).title("t").content("c").author(author).group(group).build();
+        UUID ownerId = group.getCreatedBy().getId();
+        given(groupRepository.findById(groupId)).willReturn(Optional.of(group));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(org.mockito.ArgumentMatchers.eq(groupId), any())).willReturn(true);
+        given(groupTopicRepository.findAllByGroupOrderByCreatedAtDesc(group)).willReturn(java.util.List.of(topic));
+
+        assertThat(groupTopicService.getTopicsByGroup(userId, groupId).get(0).isCanDelete()).isFalse();
+        assertThat(groupTopicService.getTopicsByGroup(ownerId, groupId).get(0).isCanDelete()).isTrue();
+        assertThat(groupTopicService.getTopicsByGroup(author.getId(), groupId).get(0).isCanDelete()).isTrue();
+    }
+
+    @Test
     @DisplayName("토픽 생성 성공")
     void createTopic_Success() {
         // given

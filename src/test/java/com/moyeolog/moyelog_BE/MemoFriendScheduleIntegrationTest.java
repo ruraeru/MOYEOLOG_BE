@@ -316,11 +316,11 @@ class MemoFriendScheduleIntegrationTest {
 
         String memoId = createMemo(writer, Map.of("title", "회의록", "content", "c", "groupId", groupId)).path("id").asText();
 
-        // 방장(작성자 아님)도 태그 수정 가능
+        // 방장(작성자 아님)도 태그 수정 가능, 모임 메모라 방장은 삭제도 가능
         mockMvc.perform(jsonBody(auth(put("/api/memos/" + memoId + "/tags"), owner), Map.of("tags", List.of("디자인"))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.tags[0]").value("디자인"))
                 .andExpect(jsonPath("$.permissions.edit").value(true))
-                .andExpect(jsonPath("$.permissions.delete").value(false));
+                .andExpect(jsonPath("$.permissions.delete").value(true));
 
         // 같은 메모 동시 수정 6건: 500 없음
         List<Integer> statuses = concurrently(6, () -> updateMemo(owner, memoId,
@@ -540,7 +540,7 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
-    @DisplayName("고정: 모임 메모·토픽은 작성자·방장만 고정하고 모두에게 맨 위, 개인 메모는 읽을 수 있는 사람 누구나 자기 고정(서로 안 보임), 모임 메모도 즐겨찾기 가능, 고정은 version·수정 시각을 안 바꾼다")
+    @DisplayName("고정: 모임 고정(group-pin)은 작성자·방장만 하고 멤버 모두에게 맨 위, 내 고정(pin)은 모임 메모·개인 메모 모두 읽을 수 있는 사람 누구나 하고 본인에게만 보임, 개인 메모 group-pin 400, 방장의 모임 메모·토픽 삭제, 고정은 version·수정 시각을 안 바꾼다")
     void pin_groupAndPersonal() throws Exception {
         Session owner = login("pinowner");
         Session writer = login("pinwriter");
@@ -555,36 +555,70 @@ class MemoFriendScheduleIntegrationTest {
         JsonNode older = json(mockMvc.perform(auth(get("/api/memos/" + olderId), writer)).andReturn());
         String newerId = createMemo(other, Map.of("title", "잡담", "content", "c", "groupId", groupId)).path("id").asText();
 
-        // 모임 메모: 작성자도 방장도 아닌 멤버는 고정 버튼이 없고 403
-        mockMvc.perform(auth(get("/api/memos/" + olderId), other)).andExpect(jsonPath("$.permissions.pin").value(false));
-        mockMvc.perform(auth(put("/api/memos/" + olderId + "/pin"), other)).andExpect(status().isForbidden());
-        mockMvc.perform(auth(get("/api/memos/" + olderId), owner)).andExpect(jsonPath("$.permissions.pin").value(true));
+        // 모임 고정: 작성자도 방장도 아닌 멤버는 모임 고정 버튼이 없고 403. 내 고정 버튼은 있다
+        mockMvc.perform(auth(get("/api/memos/" + olderId), other))
+                .andExpect(jsonPath("$.permissions.groupPin").value(false))
+                .andExpect(jsonPath("$.permissions.pin").value(true));
+        mockMvc.perform(auth(put("/api/memos/" + olderId + "/group-pin"), other)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(get("/api/memos/" + olderId), owner)).andExpect(jsonPath("$.permissions.groupPin").value(true));
 
-        // 작성자가 고정 → 200, 다시 고정해도 200, version·수정 시각 그대로
-        JsonNode pinned = json(mockMvc.perform(auth(put("/api/memos/" + olderId + "/pin"), writer))
+        // 작성자가 모임 고정 → 200, 다시 고정해도 200, version·수정 시각 그대로, 내 고정(pinnedAt)은 아니다
+        JsonNode pinned = json(mockMvc.perform(auth(put("/api/memos/" + olderId + "/group-pin"), writer))
                 .andExpect(status().isOk()).andReturn());
-        assertThat(pinned.path("pinnedAt").isNull()).isFalse();
+        assertThat(pinned.path("groupPinnedAt").isNull()).isFalse();
+        assertThat(pinned.path("pinnedAt").isNull()).isTrue();
         assertThat(pinned.path("version").asLong()).isEqualTo(older.path("version").asLong());
         assertThat(pinned.path("updatedAt").asText()).isEqualTo(older.path("updatedAt").asText());
-        mockMvc.perform(auth(put("/api/memos/" + olderId + "/pin"), writer)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.pinnedAt").value(pinned.path("pinnedAt").asText()));
+        String groupPinnedAt = pinned.path("groupPinnedAt").asText();
+        mockMvc.perform(auth(put("/api/memos/" + olderId + "/group-pin"), writer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.groupPinnedAt").value(groupPinnedAt));
 
-        // 모든 멤버에게 고정이 맨 위
-        JsonNode list = json(mockMvc.perform(auth(get("/api/groups/" + groupId + "/memos"), other))
-                .andExpect(status().isOk()).andReturn());
-        assertThat(list.get(0).path("id").asText()).isEqualTo(olderId);
-        assertThat(list.get(1).path("id").asText()).isEqualTo(newerId);
-        // 다른 멤버가 상세로 봐도 같은 고정 시각(모임 공통)
+        // 모든 멤버에게 모임 고정이 모임 메모 목록 맨 위
+        for (Session viewer : List.of(owner, writer, other)) {
+            JsonNode list = json(mockMvc.perform(auth(get("/api/groups/" + groupId + "/memos"), viewer))
+                    .andExpect(status().isOk()).andReturn());
+            assertThat(list.get(0).path("id").asText()).isEqualTo(olderId);
+            assertThat(list.get(0).path("groupPinnedAt").asText()).isEqualTo(groupPinnedAt);
+            assertThat(list.get(1).path("id").asText()).isEqualTo(newerId);
+        }
+        // 다른 멤버가 상세로 봐도 같은 모임 고정 시각(모임 공통), 내 고정은 없다
         mockMvc.perform(auth(get("/api/memos/" + olderId), other))
-                .andExpect(jsonPath("$.pinnedAt").value(pinned.path("pinnedAt").asText()));
-
-        // 수정해도 고정은 남는다
-        JsonNode edited = json(updateMemo(other, olderId, Map.of("title", "공지 수정", "content", "c2")));
-        assertThat(edited.path("pinnedAt").asText()).isEqualTo(pinned.path("pinnedAt").asText());
-
-        // 방장이 해제
-        mockMvc.perform(auth(delete("/api/memos/" + olderId + "/pin"), owner)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.groupPinnedAt").value(groupPinnedAt))
                 .andExpect(jsonPath("$.pinnedAt").isEmpty());
+        // 모임 고정만 된 메모는 '내 메모' 목록에서 맨 위로 오지 않는다(작성자의 목록은 최신순 그대로)
+        String writerLatestId = createMemo(writer, Map.of("title", "나중 개인", "content", "c")).path("id").asText();
+        mockMvc.perform(auth(get("/api/memos"), writer)).andExpect(jsonPath("$[0].id").value(writerLatestId));
+
+        // 수정해도 모임 고정은 남는다
+        JsonNode edited = json(updateMemo(other, olderId, Map.of("title", "공지 수정", "content", "c2")));
+        assertThat(edited.path("groupPinnedAt").asText()).isEqualTo(groupPinnedAt);
+
+        // 내 고정: 모임 메모도 멤버 누구나, 본인에게만 보이고 모임 고정과 따로 움직인다
+        mockMvc.perform(auth(put("/api/memos/" + newerId + "/pin"), writer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isNotEmpty())
+                .andExpect(jsonPath("$.groupPinnedAt").isEmpty());
+        mockMvc.perform(auth(get("/api/memos/" + newerId), other)).andExpect(jsonPath("$.pinnedAt").isEmpty());
+        mockMvc.perform(auth(get("/api/memos/" + newerId), owner)).andExpect(jsonPath("$.pinnedAt").isEmpty());
+        // 내 고정은 모임 메모 목록의 순서를 바꾸지 않는다
+        JsonNode afterMyPin = json(mockMvc.perform(auth(get("/api/groups/" + groupId + "/memos"), writer))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(afterMyPin.get(0).path("id").asText()).isEqualTo(olderId);
+        assertThat(afterMyPin.get(1).path("id").asText()).isEqualTo(newerId);
+        assertThat(afterMyPin.get(1).path("groupPinnedAt").isNull()).isTrue();
+        mockMvc.perform(auth(delete("/api/memos/" + newerId + "/pin"), writer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isEmpty());
+
+        // 방장이 모임 고정 해제
+        mockMvc.perform(auth(delete("/api/memos/" + olderId + "/group-pin"), owner)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.groupPinnedAt").isEmpty());
+
+        // 방장 삭제: 모임 메모는 방장도 지울 수 있고, 작성자도 방장도 아닌 멤버는 403
+        String ownerDeletableId = createMemo(writer, Map.of("title", "지울 메모", "content", "c", "groupId", groupId))
+                .path("id").asText();
+        mockMvc.perform(auth(get("/api/memos/" + ownerDeletableId), owner)).andExpect(jsonPath("$.permissions.delete").value(true));
+        mockMvc.perform(auth(get("/api/memos/" + ownerDeletableId), other)).andExpect(jsonPath("$.permissions.delete").value(false));
+        mockMvc.perform(auth(delete("/api/memos/" + ownerDeletableId), other)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(delete("/api/memos/" + ownerDeletableId), owner)).andExpect(status().isNoContent());
 
         // 모임 메모도 멤버는 즐겨찾기할 수 있고, 즐겨찾기 목록에 보인다
         mockMvc.perform(auth(put("/api/memos/" + newerId + "/favorite"), other)).andExpect(status().isOk())
@@ -599,6 +633,15 @@ class MemoFriendScheduleIntegrationTest {
         // 나중에 공유한 메모가 '공유받은 메모' 목록의 맨 위(공유 시각 최신순)
         mockMvc.perform(jsonBody(auth(post("/api/memos/" + newerPersonalId + "/share"), writer), Map.of("friendIds", List.of(other.userId()))))
                 .andExpect(status().isOk());
+        // 개인 메모는 모임 고정이 없다(400)
+        mockMvc.perform(auth(put("/api/memos/" + personalId + "/group-pin"), writer)).andExpect(status().isBadRequest());
+        mockMvc.perform(auth(get("/api/memos/" + personalId), writer)).andExpect(jsonPath("$.permissions.groupPin").value(false));
+        // 모임에 공유한 개인 메모는 작성자의 것이라 방장도 지울 수 없다
+        String sharedToGroupId = createMemo(writer, Map.of("title", "모임에 공유한 개인 메모", "content", "c")).path("id").asText();
+        mockMvc.perform(auth(post("/api/memos/" + sharedToGroupId + "/group-share/" + groupId), writer)).andExpect(status().isOk());
+        mockMvc.perform(auth(get("/api/memos/" + sharedToGroupId), owner)).andExpect(jsonPath("$.permissions.delete").value(false));
+        mockMvc.perform(auth(delete("/api/memos/" + sharedToGroupId), owner)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(delete("/api/memos/" + sharedToGroupId), writer)).andExpect(status().isNoContent());
         mockMvc.perform(auth(put("/api/memos/" + personalId + "/pin"), writer)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.pinnedAt").isNotEmpty())
                 .andExpect(jsonPath("$.permissions.pin").value(true));
@@ -647,5 +690,33 @@ class MemoFriendScheduleIntegrationTest {
         assertThat(topics.get(1).path("canPin").asBoolean()).isTrue(); // 자기가 쓴 토픽
         mockMvc.perform(auth(delete("/api/topics/" + topicA + "/pin"), writer)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.pinnedAt").isEmpty());
+
+        // 토픽 삭제: canDelete 는 작성자·방장, 작성자도 방장도 아닌 멤버는 403, 방장은 남의 토픽을 지운다
+        mockMvc.perform(auth(get("/api/topics/" + topicA), other)).andExpect(jsonPath("$.topic.canDelete").value(false));
+        mockMvc.perform(auth(get("/api/topics/" + topicA), owner)).andExpect(jsonPath("$.topic.canDelete").value(true));
+        mockMvc.perform(auth(get("/api/topics/" + topicA), writer)).andExpect(jsonPath("$.topic.canDelete").value(true));
+        mockMvc.perform(auth(delete("/api/topics/" + topicA), other)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(delete("/api/topics/" + topicA), owner)).andExpect(status().isOk());
+        mockMvc.perform(auth(delete("/api/topics/" + topicA), writer)).andExpect(status().isNotFound());
+
+        // 모임 메모의 내 고정 정리: 나가면 그 사람 것만 지운다
+        for (Session s : List.of(owner, writer, other)) {
+            mockMvc.perform(auth(put("/api/memos/" + olderId + "/pin"), s)).andExpect(status().isOk());
+        }
+        assertThat(pinCount(olderId)).isEqualTo(3);
+        mockMvc.perform(auth(delete("/api/groups/" + groupId + "/members/me"), other)).andExpect(status().is2xxSuccessful());
+        assertThat(pinCount(olderId)).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM memo_pins WHERE memo_id = ? AND user_id = ?",
+                Integer.class, UUID.fromString(olderId), UUID.fromString(other.userId()))).isZero();
+        // 모임을 지우면 메모가 작성자의 개인 메모가 되므로 작성자의 내 고정만 남는다
+        mockMvc.perform(auth(delete("/api/groups/" + groupId), owner)).andExpect(status().is2xxSuccessful());
+        assertThat(pinCount(olderId)).isEqualTo(1);
+        mockMvc.perform(auth(get("/api/memos/" + olderId), writer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.pinnedAt").isNotEmpty())
+                .andExpect(jsonPath("$.groupPinnedAt").isEmpty());
+    }
+
+    private int pinCount(String memoId) {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM memo_pins WHERE memo_id = ?", Integer.class, UUID.fromString(memoId));
     }
 }

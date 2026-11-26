@@ -107,14 +107,36 @@ class MemoServiceTest {
     }
 
     @Test
-    @DisplayName("작성자가 아닌 경우 메모 삭제 실패")
+    @DisplayName("개인 메모는 작성자가 아니면 삭제 실패")
     void deleteMemo_Unauthorized() {
         UUID otherUserId = UUID.randomUUID();
         given(memoRepository.findByIdForUpdate(memoId)).willReturn(Optional.of(memo));
 
         assertThatThrownBy(() -> memoService.deleteMemo(otherUserId, memoId))
-                .isInstanceOf(UnauthorizedAccessException.class)
-                .hasMessageContaining("작성자만");
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(memoRepository, never()).delete(any(Memo.class));
+    }
+
+    @Test
+    @DisplayName("모임 메모는 그 모임의 방장도 삭제할 수 있고, 작성자도 방장도 아닌 멤버는 403")
+    void deleteMemo_GroupMemo_Owner() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).nickname("owner").build();
+        User member = User.builder().id(UUID.randomUUID()).nickname("member").build();
+        com.moyeolog.moyelog_BE.entity.Group group = com.moyeolog.moyelog_BE.entity.Group.builder()
+                .id(groupId).createdBy(owner).build();
+        Memo gm = groupMemo(groupId);
+        stubMemoLookup(gm);
+        lenient().when(groupRepository.findById(groupId)).thenReturn(Optional.of(group));
+        stubMember(groupId, owner);
+        stubMember(groupId, member);
+
+        assertThatThrownBy(() -> memoService.deleteMemo(member.getId(), memoId))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(memoRepository, never()).delete(any(Memo.class));
+
+        memoService.deleteMemo(owner.getId(), memoId);
+        verify(memoRepository).delete(gm);
     }
 
     @Test
@@ -217,6 +239,84 @@ class MemoServiceTest {
         verify(memoRepository, never()).updatePinnedAt(any(), any());
     }
 
+    /** 모임 멤버 여부를 어느 조회로 판단하든 멤버로 보이게 한다. */
+    private void stubMember(UUID groupId, User member) {
+        lenient().when(userRepository.findById(member.getId())).thenReturn(Optional.of(member));
+        lenient().when(groupMemberRepository.findByUser(member)).thenReturn(List.of(membership(groupId, member)));
+        lenient().when(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, member.getId())).thenReturn(true);
+    }
+
+    @Test
+    @DisplayName("내 고정 - 모임 메모도 멤버 누구나 자기 memo_pins 에 고정한다. 모임 고정(memos.pinned_at)은 그대로, 본인에게만 memos 알림")
+    void pinMemo_GroupMemo_PersonalPin() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).nickname("owner").build();
+        User member = User.builder().id(UUID.randomUUID()).nickname("member").build();
+        Memo gm = groupMemo(groupId);
+        stubMemoLookup(gm);
+        lenient().when(groupRepository.findById(groupId)).thenReturn(Optional.of(
+                com.moyeolog.moyelog_BE.entity.Group.builder().id(groupId).createdBy(owner).build()));
+        stubMember(groupId, member);
+
+        MemoResponse response = memoService.pinMemo(member.getId(), memoId, true);
+
+        ArgumentCaptor<MemoPin> saved = ArgumentCaptor.forClass(MemoPin.class);
+        verify(memoPinRepository).save(saved.capture());
+        assertThat(saved.getValue().getUser().getId()).isEqualTo(member.getId());
+        verify(memoRepository, never()).updatePinnedAt(any(), any());
+        assertThat(response.getGroupPinnedAt()).isNull();
+        assertThat(response.getPermissions().isPin()).isTrue();
+        assertThat(response.getPermissions().isGroupPin()).isFalse();
+        ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher, atLeastOnce()).publishEvent(events.capture());
+        assertThat(events.getAllValues()).containsOnly(ChangeEvent.of(Set.of(member.getId()), LiveTopics.MEMOS));
+    }
+
+    @Test
+    @DisplayName("모임 고정 - 작성자도 방장도 아닌 멤버는 403, 개인 메모는 400")
+    void groupPinMemo_Failures() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).nickname("owner").build();
+        User member = User.builder().id(UUID.randomUUID()).nickname("member").build();
+        Memo gm = groupMemo(groupId);
+        stubMemoLookup(gm);
+        lenient().when(groupRepository.findById(groupId)).thenReturn(Optional.of(
+                com.moyeolog.moyelog_BE.entity.Group.builder().id(groupId).createdBy(owner).build()));
+        stubMember(groupId, member);
+
+        assertThatThrownBy(() -> memoService.groupPinMemo(member.getId(), memoId, true))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(memoRepository, never()).updatePinnedAt(any(), any());
+
+        Memo personal = Memo.builder().id(UUID.randomUUID()).author(user).title("p").build();
+        stubMemoLookup(personal);
+        lenient().when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        assertThatThrownBy(() -> memoService.groupPinMemo(userId, personal.getId(), true))
+                .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
+        verify(memoRepository, never()).updatePinnedAt(any(), any());
+        verify(memoPinRepository, never()).save(any(MemoPin.class));
+    }
+
+    @Test
+    @DisplayName("모임 고정 - 방장은 모임 메모를 모임 고정한다(memos.pinned_at), memo_pins 는 건드리지 않는다")
+    void groupPinMemo_Owner() {
+        UUID groupId = UUID.randomUUID();
+        User owner = User.builder().id(UUID.randomUUID()).nickname("owner").build();
+        Memo gm = groupMemo(groupId);
+        stubMemoLookup(gm);
+        lenient().when(groupRepository.findById(groupId)).thenReturn(Optional.of(
+                com.moyeolog.moyelog_BE.entity.Group.builder().id(groupId).createdBy(owner).build()));
+        stubMember(groupId, owner);
+
+        MemoResponse response = memoService.groupPinMemo(owner.getId(), memoId, true);
+
+        verify(memoRepository).updatePinnedAt(any(), any());
+        verify(memoPinRepository, never()).save(any(MemoPin.class));
+        assertThat(response.getPermissions().isGroupPin()).isTrue();
+        // 모임 고정은 내 고정이 아니다
+        assertThat(response.getPinnedAt()).isNull();
+    }
+
     @Test
     @DisplayName("모임 멤버인 경우 그룹 메모 접근 성공")
     void getMemo_GroupMember_Success() {
@@ -238,6 +338,9 @@ class MemoServiceTest {
         assertThat(response.getPermissions().isDelete()).isFalse();
         assertThat(response.getPermissions().isShare()).isFalse();
         assertThat(response.getPermissions().isAnalyze()).isFalse();
+        // 내 고정은 읽을 수 있으면 가능, 모임 고정은 작성자·방장만
+        assertThat(response.getPermissions().isPin()).isTrue();
+        assertThat(response.getPermissions().isGroupPin()).isFalse();
     }
 
     @Test
