@@ -5,6 +5,7 @@ import com.moyeolog.moyelog_BE.entity.Schedule;
 import com.moyeolog.moyelog_BE.event.ChangeEvents;
 import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
+import com.moyeolog.moyelog_BE.repository.MemoGroupShareRepository;
 import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
 
 import java.util.HashSet;
@@ -36,16 +37,24 @@ public final class LiveAudience {
         return changes;
     }
 
-    /** 메모: 작성자·공유받은 사람·(모임 메모) 모임 멤버 → memos / 모임 멤버 → group:{gid} */
+    /**
+     * 메모: 작성자·공유받은 사람·(모임 메모) 모임 멤버·(공유한 모임) 그 모임 멤버 → memos
+     * / 모임 멤버 → group:{gid} (메모가 속한 모임과 공유한 모임 각각)
+     */
     public static ChangeEvents addMemo(ChangeEvents changes, Memo memo, MemoShareRepository shares,
-                                       GroupMemberRepository groupMembers) {
+                                       MemoGroupShareRepository groupShares, GroupMemberRepository groupMembers) {
         Set<UUID> viewers = new HashSet<>();
         viewers.add(memo.getAuthor().getId());
         shares.findAllByMemo(memo).forEach(share -> viewers.add(share.getSharedTo().getId()));
         List<UUID> members = members(memo.getGroupId(), groupMembers);
         viewers.addAll(members);
-        changes.add(viewers, LiveTopics.MEMOS);
         changes.add(members, LiveTopics.group(memo.getGroupId()));
+        for (UUID groupId : groupShares.findGroupIdsByMemoId(memo.getId())) {
+            List<UUID> sharedMembers = members(groupId, groupMembers);
+            viewers.addAll(sharedMembers);
+            changes.add(sharedMembers, LiveTopics.group(groupId));
+        }
+        changes.add(viewers, LiveTopics.MEMOS);
         return changes;
     }
 

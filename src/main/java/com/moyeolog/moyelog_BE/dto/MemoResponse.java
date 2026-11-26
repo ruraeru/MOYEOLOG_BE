@@ -25,6 +25,7 @@ public class MemoResponse {
     private MemoInsightResponse insight;
     private Boolean isFavorite; // 요청한 사용자 기준
     private List<SharedUserResponse> sharedWith; // 작성자에게만 채워짐 (그 외에는 빈 목록)
+    private List<UUID> sharedGroupIds; // 이 개인 메모를 공유한 모임 (작성자에게만 채워짐)
     private List<MemoSummaryResponse> taggedMemos;
     private List<ScheduleSummaryResponse> taggedSchedules;
     private LocalDateTime createdAt;
@@ -64,6 +65,7 @@ public class MemoResponse {
         private UUID id;
         private String nickname;
         private String profileImage;
+        private boolean canEdit;
     }
 
     @Getter

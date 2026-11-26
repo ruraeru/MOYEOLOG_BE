@@ -60,6 +60,7 @@ class GroupServiceTest {
     @Mock private GroupImageService groupImageService;
     @Mock private DatePollRepository datePollRepository;
     @Mock private DatePollVoteRepository datePollVoteRepository;
+    @Mock private MemoGroupShareRepository memoGroupShareRepository;
     @Mock private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private GroupService groupService;

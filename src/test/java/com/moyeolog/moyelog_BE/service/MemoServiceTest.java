@@ -37,6 +37,7 @@ class MemoServiceTest {
     @Mock private FileService fileService;
     @Mock private MemoTagRepository memoTagRepository;
     @Mock private MemoShareRepository memoShareRepository;
+    @Mock private MemoGroupShareRepository memoGroupShareRepository;
     @Mock private MemoAiInsightRepository memoAiInsightRepository;
     @Mock private GeminiService geminiService;
     @Mock private GroupRepository groupRepository;
@@ -211,7 +212,7 @@ class MemoServiceTest {
     }
 
     @Test
-    @DisplayName("공유받은 사용자는 메모를 수정할 수 없다 (읽기 전용)")
+    @DisplayName("공유받은 사용자는 메모를 수정할 수 없다 (기본 읽기 전용)")
     void updateMemo_ShareRecipient_Fail() {
         UUID recipientId = UUID.randomUUID();
         given(memoRepository.findByIdForUpdate(memoId)).willReturn(Optional.of(memo));
@@ -308,7 +309,7 @@ class MemoServiceTest {
     }
 
     @Test
-    @DisplayName("공유: 이미 공유한 친구는 다시 저장하지 않고, 새로 공유받은 친구에게만 MEMO_SHARED 알림")
+    @DisplayName("공유: 이미 공유한 친구는 다시 저장하지 않고 권한만 바꾸며, 새로 공유받은 친구에게만 MEMO_SHARED 알림")
     void shareMemo_DedupAndNotify() {
         User f1 = User.builder().id(UUID.randomUUID()).nickname("f1").build();
         User f2 = User.builder().id(UUID.randomUUID()).nickname("f2").build();
@@ -317,12 +318,19 @@ class MemoServiceTest {
                 .willReturn(List.of(com.moyeolog.moyelog_BE.entity.Friend.builder().build()));
         given(userRepository.findById(f1.getId())).willReturn(Optional.of(f1));
         given(userRepository.findById(f2.getId())).willReturn(Optional.of(f2));
-        given(memoShareRepository.existsByMemo_IdAndSharedTo_Id(memoId, f1.getId())).willReturn(true);
-        given(memoShareRepository.existsByMemo_IdAndSharedTo_Id(memoId, f2.getId())).willReturn(false);
+        MemoShare existing = MemoShare.builder().memo(memo).sharedTo(f1).build();
+        given(memoShareRepository.findAllByMemo_IdAndSharedTo_Id(memoId, f1.getId())).willReturn(List.of(existing));
+        given(memoShareRepository.findAllByMemo_IdAndSharedTo_Id(memoId, f2.getId())).willReturn(List.of());
 
-        memoService.shareMemo(userId, memoId, MemoShareRequest.builder().friendIds(List.of(f1.getId(), f2.getId())).build());
+        memoService.shareMemo(userId, memoId,
+                MemoShareRequest.builder().friendIds(List.of(f1.getId(), f2.getId())).canEdit(true).build());
 
-        verify(memoShareRepository, org.mockito.Mockito.times(1)).save(any(MemoShare.class));
+        org.mockito.ArgumentCaptor<MemoShare> saved = org.mockito.ArgumentCaptor.forClass(MemoShare.class);
+        verify(memoShareRepository, org.mockito.Mockito.times(1)).save(saved.capture());
+        assertThat(saved.getValue().getSharedTo()).isEqualTo(f2);
+        assertThat(saved.getValue().isCanEdit()).isTrue();
+        // 이미 공유한 f1 은 권한만 '수정 가능'으로 바뀐다
+        assertThat(existing.isCanEdit()).isTrue();
         org.mockito.ArgumentCaptor<com.moyeolog.moyelog_BE.event.NotificationEvent> captor =
                 org.mockito.ArgumentCaptor.forClass(com.moyeolog.moyelog_BE.event.NotificationEvent.class);
         verify(eventPublisher).publishEvent(captor.capture());

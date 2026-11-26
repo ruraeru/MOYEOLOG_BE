@@ -88,6 +88,26 @@ public class MemoController {
         return ResponseEntity.noContent().build();
     }
 
+    /** 내 개인 메모를 내가 속한 모임에 공유 (그 모임 멤버는 읽기만) */
+    @PostMapping("/{id}/group-share/{groupId}")
+    public ResponseEntity<Void> shareToGroup(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @PathVariable UUID groupId) {
+        memoService.shareMemoToGroup(UUID.fromString(userId), id, groupId);
+        return ResponseEntity.ok().build();
+    }
+
+    /** 모임 공유 해제 (작성자만) */
+    @DeleteMapping("/{id}/group-share/{groupId}")
+    public ResponseEntity<Void> unshareFromGroup(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID id,
+            @PathVariable UUID groupId) {
+        memoService.unshareMemoFromGroup(UUID.fromString(userId), id, groupId);
+        return ResponseEntity.noContent().build();
+    }
+
     @PutMapping("/{id}/favorite")
     public ResponseEntity<MemoResponse> toggleFavorite(
             @AuthenticationPrincipal String userId,
