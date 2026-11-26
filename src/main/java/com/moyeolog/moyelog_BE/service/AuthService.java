@@ -328,7 +328,7 @@ public class AuthService {
         boolean usable = currentPassword != null && !currentPassword.isEmpty()
                 && currentPassword.getBytes(StandardCharsets.UTF_8).length <= MAX_PASSWORD_BYTES;
         if (!usable || !passwordEncoder.matches(currentPassword, user.getPasswordHash())) {
-            throw new BadRequestException("현재 비밀번호가 올바르지 않아요.");
+            throw new BadRequestException("지금 비밀번호가 올바르지 않아요.");
         }
         user.updateKakaoId(null);
         return UserMeResponse.from(user);

@@ -456,6 +456,11 @@ class EmailAccountIntegrationTest {
         authJson(put("/api/users/me/password"), accessToken, Map.of("currentPassword", "wrong-password", "newPassword", "next-password-3"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(AccountService.WRONG_CURRENT_PASSWORD_MESSAGE));
+        // 지금과 같은 비밀번호로는 바꾸지 않는다(모든 기기 로그아웃도 없음)
+        authJson(put("/api/users/me/password"), accessToken, Map.of("currentPassword", PASSWORD, "newPassword", PASSWORD))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(AccountService.SAME_PASSWORD_MESSAGE));
+        mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer " + accessToken)).andExpect(status().isOk());
         authJson(put("/api/users/me/password"), accessToken, Map.of("currentPassword", PASSWORD, "newPassword", "next-password-3"))
                 .andExpect(status().isNoContent());
         assertThat(passwordEncoder.matches("next-password-3", (String) userRow(addr).get("password_hash"))).isTrue();
@@ -510,7 +515,7 @@ class EmailAccountIntegrationTest {
         MimeMessage mail = mails(1).getFirst();
         assertThat(to(mail)).isEqualTo(newAddr);
         String token = tokenIn(mail);
-        assertThat(text(mail)).contains("&purpose=email");
+        assertThat(text(mail)).contains("&purpose=email&email=");
         assertThat(userRow(oldAddr).get("email_verified_at")).isNotNull(); // 인증 전까지 그대로
 
         verifyToken(token, null, null).andExpect(status().isUnauthorized())
