@@ -29,6 +29,16 @@ public interface MemoRepository extends JpaRepository<Memo, UUID> {
     @Query("SELECT m FROM Memo m WHERE m.author.id = :authorId")
     List<Memo> findAllByAuthorId(@Param("authorId") UUID authorId);
 
+    /** 고정·해제. version·수정 시각을 건드리지 않는다. 바꾼 뒤 영속성 컨텍스트를 비우므로 메모를 다시 읽어야 한다. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("UPDATE Memo m SET m.pinnedAt = :pinnedAt WHERE m.id = :id")
+    int updatePinnedAt(@Param("id") UUID id, @Param("pinnedAt") java.time.LocalDateTime pinnedAt);
+
+    /** 모임이 지워져 모임 메모가 개인 메모로 돌아갈 때 모임 고정을 푼다. */
+    @Modifying
+    @Query("UPDATE Memo m SET m.pinnedAt = null WHERE m.groupId = :groupId")
+    int clearPinnedByGroupId(@Param("groupId") UUID groupId);
+
     /** 회원 탈퇴: 다른 사람 메모의 '마지막 수정자' 참조를 지운다. */
     @Modifying
     @Query("UPDATE Memo m SET m.lastModifier = null WHERE m.lastModifier.id = :userId")

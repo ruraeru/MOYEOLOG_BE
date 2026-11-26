@@ -44,6 +44,10 @@ public class GroupTopic {
     @OneToOne(mappedBy = "topic", cascade = CascadeType.ALL, orphanRemoval = true)
     private GroupTopicInsight insight;
 
+    /** 고정한 시각(NULL = 고정 안 함). 수정 시각을 바꾸지 않도록 GroupTopicRepository.updatePinnedAt 으로만 바꾼다. */
+    @Column(name = "pinned_at", insertable = false, updatable = false)
+    private LocalDateTime pinnedAt;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 

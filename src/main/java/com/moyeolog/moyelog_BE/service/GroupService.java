@@ -610,6 +610,8 @@ public class GroupService {
 
     private void deleteGroupInternal(Group group) {
         UUID groupId = group.getId();
+        // 모임 고정은 개인 메모의 고정이 아니므로 먼저 푼다.
+        memoRepository.clearPinnedByGroupId(groupId);
         for (Memo memo : memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId)) {
             memo.detachFromGroup();
         }

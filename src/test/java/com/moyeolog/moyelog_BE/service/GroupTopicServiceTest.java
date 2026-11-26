@@ -50,7 +50,22 @@ class GroupTopicServiceTest {
         userId = UUID.randomUUID();
         groupId = UUID.randomUUID();
         user = User.builder().id(userId).nickname("testUser").build();
-        group = Group.builder().id(groupId).name("Test Group").build();
+        // 응답의 canPin 이 방장을 읽으므로 방장(작성자가 아닌 사람)을 둔다.
+        User owner = User.builder().id(UUID.randomUUID()).nickname("owner").build();
+        group = Group.builder().id(groupId).name("Test Group").createdBy(owner).build();
+    }
+
+    @Test
+    @DisplayName("고정: 작성자도 방장도 아닌 멤버는 403, 고정하지 않는다")
+    void pinTopic_NotAuthorNorOwner_Forbidden() {
+        User author = User.builder().id(UUID.randomUUID()).nickname("author").build();
+        GroupTopic topic = GroupTopic.builder().id(UUID.randomUUID()).title("t").content("c").author(author).group(group).build();
+        given(groupTopicRepository.findByIdForUpdate(topic.getId())).willReturn(Optional.of(topic));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+
+        assertThatThrownBy(() -> groupTopicService.pinTopic(userId, topic.getId(), true))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(groupTopicRepository, org.mockito.Mockito.never()).updatePinnedAt(any(), any());
     }
 
     @Test

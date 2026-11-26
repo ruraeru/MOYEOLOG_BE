@@ -24,4 +24,8 @@ public class GroupTopicResponse {
     private int commentCount;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    /** 고정한 시각(없으면 null). 고정은 모임 전체에 보인다 */
+    private LocalDateTime pinnedAt;
+    /** 보는 사람이 고정·해제할 수 있는가 (작성자 또는 방장) */
+    private boolean canPin;
 }
