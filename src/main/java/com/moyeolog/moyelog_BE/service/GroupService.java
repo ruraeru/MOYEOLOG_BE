@@ -19,6 +19,9 @@ import com.moyeolog.moyelog_BE.datepoll.DatePollRepository;
 import com.moyeolog.moyelog_BE.datepoll.DatePollVoteRepository;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.live.LiveAudience;
+import com.moyeolog.moyelog_BE.notice.GroupNoticePollVoteRepository;
+import com.moyeolog.moyelog_BE.notice.GroupNoticeReadRepository;
+import com.moyeolog.moyelog_BE.notice.GroupNoticeRepository;
 import com.moyeolog.moyelog_BE.repository.*;
 import com.moyeolog.moyelog_BE.validation.CodePointSizeValidator;
 import lombok.RequiredArgsConstructor;
@@ -65,6 +68,9 @@ public class GroupService {
     private final DatePollVoteRepository datePollVoteRepository;
     private final MemoGroupShareRepository memoGroupShareRepository;
     private final MemoPinRepository memoPinRepository;
+    private final GroupNoticeRepository groupNoticeRepository;
+    private final GroupNoticeReadRepository groupNoticeReadRepository;
+    private final GroupNoticePollVoteRepository groupNoticePollVoteRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     /** 프론트 lib/constants.ts THEME_COLORS 의 키 */
@@ -533,6 +539,9 @@ public class GroupService {
         }
         removeFromGroupSchedules(groupId, targetMemberId, changes);
         datePollVoteRepository.deleteAllByGroupAndUser(groupId, targetMemberId);
+        // 이 모임 공지의 읽음·투표 기록도 지운다(읽음 수·투표 집계에서 빠지게).
+        groupNoticeReadRepository.deleteByUserIdAndGroupId(targetMemberId, groupId);
+        groupNoticePollVoteRepository.deleteByUserIdAndGroupId(targetMemberId, groupId);
         // 내보내진 사람이 이 모임에 공유한 개인 메모는 거둔다.
         memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, targetMemberId);
         // 이 모임으로 공유받아 고정한 남의 개인 메모는 더 못 읽으므로 고정을 지운다.
@@ -573,6 +582,9 @@ public class GroupService {
         }
         removeFromGroupSchedules(groupId, userId, changes);
         datePollVoteRepository.deleteAllByGroupAndUser(groupId, userId);
+        // 이 모임 공지의 읽음·투표 기록도 지운다(읽음 수·투표 집계에서 빠지게).
+        groupNoticeReadRepository.deleteByUserIdAndGroupId(userId, groupId);
+        groupNoticePollVoteRepository.deleteByUserIdAndGroupId(userId, groupId);
         // 나간 사람이 이 모임에 공유한 개인 메모는 거둔다.
         memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, userId);
         // 이 모임으로 공유받아 고정한 남의 개인 메모는 더 못 읽으므로 고정을 지운다.
@@ -638,6 +650,8 @@ public class GroupService {
         // 날짜 조율과 선택. 조율로 만든 일정은 위에서 개인 일정으로 남겼다.
         datePollVoteRepository.deleteAllByGroupId(groupId);
         datePollRepository.deleteAllByGroupId(groupId);
+        // 공지. 읽음·투표·선택지는 DB 의 ON DELETE CASCADE 로 같이 지워진다.
+        groupNoticeRepository.deleteAllByGroupId(groupId);
 
         groupInvitationRepository.deleteAllByGroup(group);
         groupBlockRepository.deleteAllByGroup(group);

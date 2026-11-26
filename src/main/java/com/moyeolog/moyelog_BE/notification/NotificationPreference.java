@@ -60,6 +60,7 @@ public class NotificationPreference {
 
     /**
      * 알림 종류별 설정. 친구 수락은 '친구 요청' 설정을, 모임에서 내보내짐은 '모임 초대' 설정을 따른다.
+     * 모임 공지는 설정 칸이 없어 항상 보낸다.
      */
     public boolean allows(NotificationType type) {
         return switch (type) {
@@ -68,6 +69,7 @@ public class NotificationPreference {
             case MEMO_SHARED -> memoShared;
             case TOPIC_COMMENT -> topicComment;
             case SCHEDULE_PARTICIPANT -> scheduleParticipant;
+            case GROUP_NOTICE -> true;
         };
     }
 }

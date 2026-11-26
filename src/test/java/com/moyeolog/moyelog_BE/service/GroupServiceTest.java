@@ -23,6 +23,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import com.moyeolog.moyelog_BE.datepoll.DatePollRepository;
 import com.moyeolog.moyelog_BE.datepoll.DatePollVoteRepository;
+import com.moyeolog.moyelog_BE.notice.GroupNoticePollVoteRepository;
+import com.moyeolog.moyelog_BE.notice.GroupNoticeReadRepository;
+import com.moyeolog.moyelog_BE.notice.GroupNoticeRepository;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -62,6 +65,9 @@ class GroupServiceTest {
     @Mock private DatePollVoteRepository datePollVoteRepository;
     @Mock private MemoGroupShareRepository memoGroupShareRepository;
     @Mock private MemoPinRepository memoPinRepository;
+    @Mock private GroupNoticeRepository groupNoticeRepository;
+    @Mock private GroupNoticeReadRepository groupNoticeReadRepository;
+    @Mock private GroupNoticePollVoteRepository groupNoticePollVoteRepository;
     @Mock private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private GroupService groupService;
@@ -243,6 +249,9 @@ class GroupServiceTest {
         verify(memoPinRepository).deleteByUserIdAndGroupSharedMemos(targetUserId, groupId);
         // 그 모임의 모임 메모에 한 내 고정도 지운다
         verify(memoPinRepository).deleteByUserIdAndGroupMemos(targetUserId, groupId);
+        // 이 모임 공지의 읽음·투표도 지운다
+        verify(groupNoticeReadRepository).deleteByUserIdAndGroupId(targetUserId, groupId);
+        verify(groupNoticePollVoteRepository).deleteByUserIdAndGroupId(targetUserId, groupId);
         assertThat(group.getInviteCode()).isNotNull().isNotEqualTo("OLDCOD").hasSize(6);
         ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
         verify(eventPublisher).publishEvent(event.capture());
@@ -298,6 +307,8 @@ class GroupServiceTest {
         verify(groupInvitationRepository).deletePendingFromInviter(otherGroupId, userId);
         verify(memoPinRepository).deleteByUserIdAndGroupSharedMemos(userId, otherGroupId);
         verify(memoPinRepository).deleteByUserIdAndGroupMemos(userId, otherGroupId);
+        verify(groupNoticeReadRepository).deleteByUserIdAndGroupId(userId, otherGroupId);
+        verify(groupNoticePollVoteRepository).deleteByUserIdAndGroupId(userId, otherGroupId);
         assertThatThrownBy(() -> groupService.leaveGroup(userId, otherGroupId))
                 .isInstanceOf(UnauthorizedAccessException.class);
         // 이미 나간 경우(두 번째 호출)는 고정을 다시 지우지 않는다
@@ -332,6 +343,7 @@ class GroupServiceTest {
 
         verify(memoPinRepository).deleteNonAuthorPinsByGroupId(groupId);
         verify(memoRepository).clearPinnedByGroupId(groupId);
+        verify(groupNoticeRepository).deleteAllByGroupId(groupId);
         verify(groupRepository).delete(group);
     }
 
