@@ -103,6 +103,27 @@ class GroupApiIntegrationTest {
     }
 
     @Test
+    @DisplayName("내 모임 목록: 최근에 만들거나 들어간 모임이 먼저")
+    void myGroupsNewestFirst() throws Exception {
+        Session a = login("ord-a");
+        Session b = login("ord-b");
+        JsonNode first = createGroup(a, Map.of("name", "첫째"));
+        Thread.sleep(20);
+        JsonNode bGroup = createGroup(b, Map.of("name", "b 모임"));
+        Thread.sleep(20);
+        JsonNode second = createGroup(a, Map.of("name", "둘째"));
+        Thread.sleep(20);
+        mockMvc.perform(auth(post("/api/groups/join").param("code", bGroup.path("inviteCode").asText()), a))
+                .andExpect(status().isOk());
+
+        JsonNode list = json(mockMvc.perform(auth(get("/api/groups"), a)).andExpect(status().isOk()).andReturn());
+        assertThat(list).hasSize(3);
+        assertThat(list.get(0).path("id").asText()).isEqualTo(bGroup.path("id").asText());
+        assertThat(list.get(1).path("id").asText()).isEqualTo(second.path("id").asText());
+        assertThat(list.get(2).path("id").asText()).isEqualTo(first.path("id").asText());
+    }
+
+    @Test
     @DisplayName("모임 만들기: 이모지 30자 허용, 이름 trim, 색은 정해진 값만, myRole·멤버 customId")
     void createGroupValidation() throws Exception {
         Session owner = login("gv");

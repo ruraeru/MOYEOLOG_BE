@@ -224,8 +224,12 @@ public class GroupService {
         User user = findUserById(userId);
 
         // 과거 데이터에 중복 멤버십이 있어도 모임이 두 번 나오지 않도록 한다.
+        // 최근에 만들거나 들어간 모임이 먼저 온다(가입 시각 최신순). 순서가 없으면 방금 만든 모임이 목록 중간에 섞인다.
+        List<GroupMember> memberships = new ArrayList<>(groupMemberRepository.findByUser(user));
+        memberships.sort(Comparator.comparing(GroupMember::getJoinedAt,
+                Comparator.nullsLast(Comparator.<LocalDateTime>reverseOrder())));
         Map<UUID, Group> groups = new LinkedHashMap<>();
-        for (GroupMember membership : groupMemberRepository.findByUser(user)) {
+        for (GroupMember membership : memberships) {
             groups.putIfAbsent(membership.getGroup().getId(), membership.getGroup());
         }
         return groups.values().stream()
