@@ -10,6 +10,7 @@ import com.moyeolog.moyelog_BE.event.ChangeEvents;
 import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
@@ -309,6 +310,8 @@ public class MemoService {
         deleteMemoInternal(memo);
         ConcurrentUpdates.flush(memoRepository::flush);
         audience.publish(eventPublisher);
+        // 지운 메모를 가리키던 공유 알림도 지운다(누르면 '찾을 수 없어요' 만 보이므로)
+        eventPublisher.publishEvent(NotificationRetractEvent.ofLink("/memo/" + memoId));
     }
 
     @Transactional

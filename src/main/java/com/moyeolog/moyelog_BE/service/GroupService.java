@@ -14,6 +14,7 @@ import com.moyeolog.moyelog_BE.event.ChangeEvent;
 import com.moyeolog.moyelog_BE.event.ChangeEvents;
 import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.datepoll.DatePollRepository;
 import com.moyeolog.moyelog_BE.datepoll.DatePollVoteRepository;
@@ -404,8 +405,8 @@ public class GroupService {
             // 받은 초대 목록(알림 화면의 초대 탭). 초대 알림을 꺼 둔 사람도 목록은 바뀐다.
             eventPublisher.publishEvent(ChangeEvent.of(List.of(userId), LiveTopics.NOTIFICATIONS));
             eventPublisher.publishEvent(new NotificationEvent(userId, inviterId, NotificationType.GROUP_INVITE,
-                    inviter.getNickname() + "님이 \"" + group.getName() + "\" 모임에 초대했어요.",
-                    "/notifications?tab=invites"));
+                    inviter.getNickname() + "님이 '" + group.getName() + "' 모임에 초대했어요.",
+                    inviteLink(groupId)));
         }
         if (created == 0 && coolingDown > 0) {
             throw conflict("최근에 초대를 거절한 친구예요. 며칠 뒤에 다시 초대해 주세요.");
@@ -449,6 +450,7 @@ public class GroupService {
         // 같은 모임의 다른 대기 초대(과거 중복 데이터)도 정리
         groupInvitationRepository.deletePendingForInvitee(groupId, userId);
         membershipChange(groupId).add(List.of(userId), LiveTopics.NOTIFICATIONS).publish(eventPublisher);
+        retractInviteNotifications(userId, groupId);
     }
 
     @Transactional
@@ -456,6 +458,17 @@ public class GroupService {
         GroupInvitation invitation = lockPendingInvitation(userId, invitationId);
         invitation.reject();
         eventPublisher.publishEvent(ChangeEvent.of(List.of(userId), LiveTopics.NOTIFICATIONS));
+        retractInviteNotifications(userId, invitation.getGroup().getId());
+    }
+
+    /** 모임 초대 알림 링크. 모임마다 달라서 처리된 초대의 알림만 골라 지울 수 있다. */
+    static String inviteLink(UUID groupId) {
+        return "/notifications?tab=invites&group=" + groupId;
+    }
+
+    /** 수락·거절한 초대의 알림을 받은 사람에게서 지운다(커밋 뒤). 다른 모임의 대기 초대 알림은 남는다. */
+    private void retractInviteNotifications(UUID userId, UUID groupId) {
+        eventPublisher.publishEvent(new NotificationRetractEvent(userId, null, NotificationType.GROUP_INVITE, inviteLink(groupId)));
     }
 
     /**
@@ -564,7 +577,7 @@ public class GroupService {
         changes.publish(eventPublisher);
 
         eventPublisher.publishEvent(new NotificationEvent(targetMemberId, ownerId, NotificationType.GROUP_KICKED,
-                "\"" + group.getName() + "\" 모임에서 내보내졌어요.", "/groups"));
+                "'" + group.getName() + "' 모임에서 내보내졌어요.", "/groups"));
     }
 
     /** 모임 나가기. 방장은 나갈 수 없습니다 (모임을 삭제해야 함). */

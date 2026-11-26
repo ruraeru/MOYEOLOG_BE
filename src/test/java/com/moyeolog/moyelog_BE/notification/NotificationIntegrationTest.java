@@ -2,6 +2,7 @@ package com.moyeolog.moyelog_BE.notification;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.notification.NotifyTestSupport.Session;
@@ -162,6 +163,11 @@ class NotificationIntegrationTest {
         mockMvc.perform(auth(put("/api/notifications/read-all"), a)).andExpect(status().isNoContent());
         assertThat(unread(a)).isZero();
 
+        // 읽은 알림 모두 지우기: 읽은 것만 지운다
+        publishInTx(a.userId(), null, NotificationType.MEMO_SHARED, "새로 온 알림", "/memo/new");
+        mockMvc.perform(auth(delete("/api/notifications/read"), a)).andExpect(status().isNoContent());
+        assertThat(texts(list(a), "message")).containsExactly("새로 온 알림");
+
         mockMvc.perform(auth(put("/api/notifications/not-a-uuid/read"), a)).andExpect(status().isBadRequest());
         mockMvc.perform(get("/api/notifications")).andExpect(status().is4xxClientError());
     }
@@ -182,6 +188,34 @@ class NotificationIntegrationTest {
         assertThat(list(a).size()).isZero();
         assertThat(texts(list(b), "message")).containsExactly("무관");
         assertThat(preferenceRepository.existsById(a.userId())).isFalse();
+    }
+
+    @Test
+    @DisplayName("링크로 지우기: 그 링크의 알림만 지우고 같은 종류의 다른 알림은 남긴다")
+    void retractByLink() throws Exception {
+        Session a = login(mockMvc, "초대받은이");
+        publishInTx(a.userId(), null, NotificationType.GROUP_INVITE, "처리한 초대", "/notifications?tab=invites&group=g1");
+        publishInTx(a.userId(), null, NotificationType.GROUP_INVITE, "대기 초대", "/notifications?tab=invites&group=g2");
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(new NotificationRetractEvent(a.userId(), null,
+                NotificationType.GROUP_INVITE, "/notifications?tab=invites&group=g1")));
+
+        assertThat(texts(list(a), "message")).containsExactly("대기 초대");
+    }
+
+    @Test
+    @DisplayName("지운 대상 링크로 지우기: 모든 받는 사람에게서 그 링크 알림만 지운다")
+    void retractAllByLink() throws Exception {
+        Session a = login(mockMvc, "받은이1");
+        Session b = login(mockMvc, "받은이2");
+        publishInTx(a.userId(), null, NotificationType.MEMO_SHARED, "지운 메모", "/memo/m1");
+        publishInTx(b.userId(), null, NotificationType.MEMO_SHARED, "지운 메모", "/memo/m1");
+        publishInTx(a.userId(), null, NotificationType.MEMO_SHARED, "남은 메모", "/memo/m2");
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(NotificationRetractEvent.ofLink("/memo/m1")));
+
+        assertThat(texts(list(a), "message")).containsExactly("남은 메모");
+        assertThat(texts(list(b), "message")).isEmpty();
     }
 
     private String pendingRequestId(Session receiver) throws Exception {

@@ -208,7 +208,7 @@ public class GroupNoticePollService {
         List<User> waiting = members.stream().filter(u -> !voted.contains(u.getId())).toList();
         String actor = members.stream().filter(u -> u.getId().equals(userId)).findFirst()
                 .map(User::getNickname).orElse("방장");
-        access.notify(waiting, userId, groupId,
+        access.notify(waiting, userId, groupId, notice.getId(),
                 actor + "님이 '" + shortTitle(notice) + "' 공지의 투표를 기다리고 있어요.");
     }
 

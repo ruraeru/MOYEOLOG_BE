@@ -186,8 +186,7 @@ public class GroupTopicService {
         UUID topicAuthorId = topic.getAuthor().getId();
         if (!topicAuthorId.equals(userId)) {
             eventPublisher.publishEvent(new NotificationEvent(topicAuthorId, userId, NotificationType.TOPIC_COMMENT,
-                    author.getNickname() + "님이 \"" + CodePointSizeValidator.truncate(topic.getTitle(), 30)
-                            + "\" 토픽에 댓글을 남겼어요.",
+                    author.getNickname() + "님이 '" + shortTitle(topic.getTitle()) + "' 토픽에 댓글을 남겼어요.",
                     "/groups/" + topic.getGroup().getId() + "?topic=" + topic.getId()));
         }
         return convertToCommentResponse(saved);
@@ -455,5 +454,11 @@ public class GroupTopicService {
                 .stale(insight.getTopic() != null && AiAnalysisSupport.isStale(insight.getSourceHash(), insight.getAnalyzedAt(),
                         insight.getTopic().getContent(), insight.getTopic().getImageUrl(), insight.getTopic().getUpdatedAt()))
                 .build();
+    }
+
+    /** 알림 문구용 제목: 30자가 넘으면 자르고 말줄임표를 붙인다 */
+    static String shortTitle(String title) {
+        String t = title == null ? "" : title.strip();
+        return CodePointSizeValidator.length(t) > 30 ? CodePointSizeValidator.truncate(t, 30).strip() + "…" : t;
     }
 }

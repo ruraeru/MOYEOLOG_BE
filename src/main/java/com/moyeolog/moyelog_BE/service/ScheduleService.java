@@ -9,6 +9,7 @@ import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.event.ChangeEvents;
 import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
@@ -131,6 +132,8 @@ public class ScheduleService {
         scheduleRepository.delete(schedule);
         ConcurrentUpdates.flush(scheduleRepository::flush);
         changes.publish(eventPublisher);
+        // 지운 일정을 가리키던 참여·중간 지점 알림도 지운다
+        eventPublisher.publishEvent(NotificationRetractEvent.ofLink("/schedule/" + scheduleId));
     }
 
     @Transactional

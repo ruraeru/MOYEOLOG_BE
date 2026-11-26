@@ -10,6 +10,7 @@ import com.moyeolog.moyelog_BE.entity.GroupMember;
 import com.moyeolog.moyelog_BE.entity.User;
 import com.moyeolog.moyelog_BE.enums.InvitationStatus;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
+import com.moyeolog.moyelog_BE.event.NotificationRetractEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.exception.BadRequestException;
@@ -512,6 +513,30 @@ class GroupServiceTest {
         assertThat(invitation.getPendingFlag()).isNull();
         verify(groupMemberRepository).save(any(GroupMember.class));
         verify(groupInvitationRepository).deletePendingForInvitee(group.getId(), userId);
+        // 처리한 초대의 알림만 지운다(링크로 그 모임을 고른다)
+        verify(eventPublisher).publishEvent(new NotificationRetractEvent(userId, null, NotificationType.GROUP_INVITE,
+                "/notifications?tab=invites&group=" + group.getId()));
+    }
+
+    @Test
+    @DisplayName("초대 거절 - 그 모임 초대 알림을 지우는 이벤트")
+    void rejectInvitation_RetractsNotification() {
+        Group group = Group.builder().id(UUID.randomUUID()).build();
+        GroupInvitation invitation = invitation(group, InvitationStatus.PENDING);
+        stubInvitationLock(group, invitation);
+
+        groupService.rejectInvitation(userId, invitation.getId());
+
+        verify(eventPublisher).publishEvent(new NotificationRetractEvent(userId, null, NotificationType.GROUP_INVITE,
+                "/notifications?tab=invites&group=" + group.getId()));
+    }
+
+    @Test
+    @DisplayName("토픽 알림 제목 - 30자 넘으면 말줄임표, 끝 공백 제거")
+    void topicShortTitle() {
+        assertThat(GroupTopicService.shortTitle("짧은 제목")).isEqualTo("짧은 제목");
+        assertThat(GroupTopicService.shortTitle("캠핑 장소 어디로 갈까요? 아주 긴 토픽 제목이 서른 글자를 넘어가면"))
+                .isEqualTo("캠핑 장소 어디로 갈까요? 아주 긴 토픽 제목이 서른…");
     }
 
     @Test
@@ -610,7 +635,7 @@ class GroupServiceTest {
         ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
         verify(eventPublisher).publishEvent(event.capture());
         assertThat(event.getValue().type()).isEqualTo(NotificationType.GROUP_INVITE);
-        assertThat(event.getValue().link()).isEqualTo("/notifications?tab=invites");
+        assertThat(event.getValue().link()).isEqualTo("/notifications?tab=invites&group=" + groupId);
         assertThat(event.getValue().message()).contains("testUser").contains("모임");
     }
 

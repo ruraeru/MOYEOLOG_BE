@@ -41,6 +41,13 @@ public class NotificationController {
         return ResponseEntity.noContent().build();
     }
 
+    /** 읽은 알림 모두 지우기 */
+    @DeleteMapping("/read")
+    public ResponseEntity<Void> deleteRead(@AuthenticationPrincipal String userId) {
+        notificationService.deleteRead(UUID.fromString(userId));
+        return ResponseEntity.noContent().build();
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
         notificationService.delete(UUID.fromString(userId), id);

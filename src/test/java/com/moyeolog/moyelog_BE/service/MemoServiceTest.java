@@ -104,6 +104,8 @@ class MemoServiceTest {
         verify(memoFavoriteRepository).deleteAllByMemo(withImage);
         verify(memoPinRepository).deleteAllByMemoId(memoId);
         verify(fileService).deleteFileAfterCommit("/uploads/a.png");
+        // 지운 메모를 가리키던 알림도 정리
+        verify(eventPublisher).publishEvent(com.moyeolog.moyelog_BE.event.NotificationRetractEvent.ofLink("/memo/" + memoId));
     }
 
     @Test
