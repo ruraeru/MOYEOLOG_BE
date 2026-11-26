@@ -213,6 +213,18 @@ class MessageIntegrationTest {
         assertThat(conv.size()).isEqualTo(1);
         assertThat(conv.get(0).path("friend").path("id").asText()).isEqualTo(a.userId().toString());
         assertThat(conv.get(0).path("unreadCount").asLong()).isEqualTo(1);
+        assertThat(conv.get(0).path("canSend").asBoolean(true)).isFalse();
+    }
+
+    @Test
+    @DisplayName("대화 목록의 canSend: 지금 친구면 true")
+    void conversations_canSend() throws Exception {
+        Session a = login(mockMvc, "친구표시");
+        Session b = login(mockMvc, "친구표시상대");
+        makeFriends(mockMvc, a, b);
+        JsonNode conv = conversations(a);
+        assertThat(conv.size()).isEqualTo(1);
+        assertThat(conv.get(0).path("canSend").asBoolean(false)).isTrue();
     }
 
     @Test
