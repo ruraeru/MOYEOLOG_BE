@@ -163,6 +163,11 @@ class NotificationIntegrationTest {
         mockMvc.perform(auth(put("/api/notifications/read-all"), a)).andExpect(status().isNoContent());
         assertThat(unread(a)).isZero();
 
+        // 읽은 알림 모두 지우기: 읽은 것만 지운다
+        publishInTx(a.userId(), null, NotificationType.MEMO_SHARED, "새로 온 알림", "/memo/new");
+        mockMvc.perform(auth(delete("/api/notifications/read"), a)).andExpect(status().isNoContent());
+        assertThat(texts(list(a), "message")).containsExactly("새로 온 알림");
+
         mockMvc.perform(auth(put("/api/notifications/not-a-uuid/read"), a)).andExpect(status().isBadRequest());
         mockMvc.perform(get("/api/notifications")).andExpect(status().is4xxClientError());
     }

@@ -72,6 +72,14 @@ public class NotificationService {
         publishChange(userId);
     }
 
+    /** 읽은 알림 모두 지우기. 안 읽은 알림은 남긴다. */
+    @Transactional
+    public int deleteRead(UUID userId) {
+        int deleted = notificationRepository.deleteReadByRecipient(userId);
+        if (deleted > 0) publishChange(userId);
+        return deleted;
+    }
+
     /** 커밋 뒤 실시간 갱신: 받는 사람의 알림 목록·배지 */
     private void publishChange(UUID recipientId) {
         eventPublisher.publishEvent(ChangeEvent.of(java.util.List.of(recipientId), LiveTopics.NOTIFICATIONS));

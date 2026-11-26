@@ -48,4 +48,8 @@ public interface NotificationRepository extends JpaRepository<Notification, UUID
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("DELETE FROM Notification n WHERE n.link = :link")
     int deleteByLink(@Param("link") String link);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("DELETE FROM Notification n WHERE n.recipient.id = :userId AND n.readAt IS NOT NULL")
+    int deleteReadByRecipient(@Param("userId") UUID userId);
 }
