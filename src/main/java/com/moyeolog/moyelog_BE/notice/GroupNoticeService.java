@@ -53,7 +53,7 @@ public class GroupNoticeService {
                     noticeUser(notice.getAuthor()), notice.getCreatedAt(), notice.getUpdatedAt(), notice.getPinnedAt(),
                     read.size(), members.size(), read.contains(userId),
                     poll != null, poll != null && poll.closed(), poll != null && poll.myVoted(),
-                    canManage);
+                    canManage, poll == null ? null : poll.response().closesAt());
         }).toList();
     }
 

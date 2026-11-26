@@ -334,6 +334,14 @@ class GroupNoticeIntegrationTest {
         assertThat(notificationCount(b)).isEqualTo(bBefore + 1);
         assertThat(notificationCount(a)).isEqualTo(aBefore);
         assertThat(notificationCount(owner)).isEqualTo(ownerBefore);
+        // 알림을 누르면 그 공지가 열리도록 링크에 공지 ID
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT link FROM notifications WHERE recipient_id = ? ORDER BY created_at DESC LIMIT 1",
+                String.class, UUID.fromString(b.userId())))
+                .isEqualTo("/groups/" + groupId + "?tab=notice&notice=" + noticeId);
+        // 연달아 재촉하면 409, 알림은 더 가지 않는다
+        mockMvc.perform(auth(post(base(groupId) + "/" + noticeId + "/poll/remind"), owner)).andExpect(status().isConflict());
+        assertThat(notificationCount(b)).isEqualTo(bBefore + 1);
 
         // 마감: 방장만. 닫히면 고르기 409, 목록에 pollClosed
         mockMvc.perform(auth(post(base(groupId) + "/" + noticeId + "/poll/close"), a)).andExpect(status().isForbidden());
@@ -385,6 +393,9 @@ class GroupNoticeIntegrationTest {
         JsonNode timed = json(r).path("poll");
         assertThat(timed.path("closesAt").asText()).startsWith(closesAt.substring(0, 16));
         assertThat(timed.path("closed").asBoolean()).isFalse();
+        // 목록에도 마감 시각(화면이 그 시각에 다시 부른다)
+        assertThat(find(list(owner, groupId), json(r).path("id").asText()).path("pollClosesAt").asText())
+                .startsWith(closesAt.substring(0, 16));
     }
 
     @Test

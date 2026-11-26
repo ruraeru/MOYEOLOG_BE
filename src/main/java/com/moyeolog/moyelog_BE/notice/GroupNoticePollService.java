@@ -14,8 +14,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 공지에 붙는 투표(공지 하나에 0~1개).
@@ -33,6 +35,11 @@ public class GroupNoticePollService {
     static final int MAX_OPTIONS = 10;
     static final int MAX_OPTION_LENGTH = 100;
     private static final String NOT_FOUND = "투표를 찾을 수 없어요. 삭제됐을 수 있어요.";
+    /** 같은 투표를 다시 재촉하려면 기다려야 하는 시간(연달아 눌러 같은 알림이 쌓이지 않게) */
+    static final Duration REMIND_COOLDOWN = Duration.ofMinutes(5);
+
+    /** 투표 ID → 마지막으로 재촉한 시각(앱 메모리. 인스턴스가 하나라는 전제, 재시작하면 비워진다) */
+    private final Map<UUID, LocalDateTime> lastReminded = new ConcurrentHashMap<>();
 
     private final NoticeAccess access;
     private final GroupNoticePollRepository pollRepository;
@@ -206,6 +213,20 @@ public class GroupNoticePollService {
         Set<UUID> voted = new HashSet<>();
         voteRepository.findAllByPollIds(List.of(poll.getId())).forEach(v -> voted.add(v.getUser().getId()));
         List<User> waiting = members.stream().filter(u -> !voted.contains(u.getId())).toList();
+        if (waiting.stream().anyMatch(u -> !u.getId().equals(userId))) {
+            LocalDateTime now = LocalDateTime.now();
+            boolean[] tooSoon = {false};
+            lastReminded.compute(poll.getId(), (id, last) -> {
+                if (last != null && last.plus(REMIND_COOLDOWN).isAfter(now)) {
+                    tooSoon[0] = true;
+                    return last;
+                }
+                return now;
+            });
+            if (tooSoon[0]) {
+                throw new ConflictException("방금 재촉했어요. " + REMIND_COOLDOWN.toMinutes() + "분 뒤에 다시 할 수 있어요.");
+            }
+        }
         String actor = members.stream().filter(u -> u.getId().equals(userId)).findFirst()
                 .map(User::getNickname).orElse("방장");
         access.notify(waiting, userId, groupId, notice.getId(),
