@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.UUID;
 
-/** 모임 날짜 조율: 멤버가 가능한 날을 고르고, 모임장이 하나를 정하면 모임 일정이 된다. */
+/** 모임 날짜 조율: 멤버 누구나 열고, 멤버가 가능한 날을 고르고, 만든 사람이나 모임장이 하나를 정하면 모임 일정이 된다. */
 @RestController
 @RequestMapping("/api/groups/{groupId}/date-polls")
 @RequiredArgsConstructor
@@ -50,7 +50,7 @@ public class DatePollController {
         return ResponseEntity.ok(datePollService.recommend(UUID.fromString(userId), groupId, pollId));
     }
 
-    /** 아직 응답하지 않은 멤버에게 알림 (모임장만) */
+    /** 아직 응답하지 않은 멤버에게 알림 (만든 사람 또는 모임장) */
     @PostMapping("/{pollId}/remind")
     public ResponseEntity<Void> remind(@AuthenticationPrincipal String userId, @PathVariable UUID groupId,
                                        @PathVariable UUID pollId) {
@@ -58,14 +58,14 @@ public class DatePollController {
         return ResponseEntity.noContent().build();
     }
 
-    /** 날짜를 정하고 모임 일정을 만든다 (모임장만) */
+    /** 날짜를 정하고 모임 일정을 만든다 (만든 사람 또는 모임장) */
     @PostMapping("/{pollId}/confirm")
     public ResponseEntity<DatePollDetail> confirm(@AuthenticationPrincipal String userId, @PathVariable UUID groupId,
                                                   @PathVariable UUID pollId, @Valid @RequestBody ConfirmRequest request) {
         return ResponseEntity.ok(datePollService.confirm(UUID.fromString(userId), groupId, pollId, request));
     }
 
-    /** 조율 삭제 (모임장만). 만들어진 일정은 남는다. */
+    /** 조율 삭제 (만든 사람 또는 모임장). 만들어진 일정은 남는다. */
     @DeleteMapping("/{pollId}")
     public ResponseEntity<Void> delete(@AuthenticationPrincipal String userId, @PathVariable UUID groupId,
                                        @PathVariable UUID pollId) {

@@ -38,7 +38,7 @@ import java.util.*;
 
 /**
  * 모임 날짜 조율.
- * - 보기·고르기·추천: 모임 멤버. 만들기·재촉·정하기·지우기: 모임장(방장).
+ * - 보기·고르기·추천·만들기: 모임 멤버. 재촉·정하기·지우기: 그 조율을 만든 사람 또는 모임장(방장).
  * - 집계(날짜별 인원, best)는 코드가 한다. AI 는 집계를 받아 요약과 추천 이유만 만든다.
  * - 지금 모임 멤버의 선택만 센다(나간 사람의 선택은 GroupService 가 지우지만, 읽을 때도 한 번 더 거른다).
  */
@@ -72,18 +72,19 @@ public class DatePollService {
     /** 진행 중인 것(최근에 만든 순) 다음에 최근에 정해진 것 5개까지 */
     @Transactional(readOnly = true)
     public List<DatePollSummary> list(UUID userId, UUID groupId) {
-        requireMember(groupId, userId);
+        Group group = requireMember(groupId, userId);
         List<User> members = members(groupId);
         List<DatePoll> polls = new ArrayList<>(
                 pollRepository.findAllByGroup_IdAndStatusOrderByCreatedAtDesc(groupId, DatePoll.Status.OPEN));
         polls.addAll(pollRepository.findTop5ByGroup_IdAndStatusOrderByConfirmedAtDesc(groupId, DatePoll.Status.CONFIRMED));
-        return polls.stream().map(poll -> summary(poll, tally(poll, members), userId, members.size())).toList();
+        return polls.stream().map(poll -> summary(poll, tally(poll, members), userId, members.size(),
+                canManage(group, poll, userId))).toList();
     }
 
     @Transactional
     public DatePollDetail create(UUID userId, UUID groupId, CreateRequest request) {
         Group group = requireMember(groupId, userId);
-        requireOwner(group, userId, "모임장만 날짜 조율을 만들 수 있어요.");
+        User me = userRepository.getReferenceById(userId);
         LocalDate start = request.startDate(), end = request.endDate();
         if (start.isBefore(LocalDate.now())) {
             throw new BadRequestException("시작 날짜는 오늘이거나 그 뒤여야 해요.");
@@ -96,14 +97,14 @@ public class DatePollService {
         }
 
         DatePoll poll = pollRepository.save(DatePoll.builder()
-                .group(group).creator(group.getCreatedBy())
+                .group(group).creator(me)
                 .title(request.title().trim())
                 .startDate(start).endDate(end)
                 .status(DatePoll.Status.OPEN)
                 .build());
 
         List<User> members = members(groupId);
-        notify(members, userId, groupId, group.getCreatedBy().getNickname() + "님이 '" + shortTitle(poll)
+        notify(members, userId, groupId, nickname(members, userId) + "님이 '" + shortTitle(poll)
                 + "' 날짜 조율을 시작했어요. 가능한 날을 골라 주세요.");
         publishChange(groupId, members);
         return detail(poll, members, userId);
@@ -158,13 +159,13 @@ public class DatePollService {
     @Transactional
     public void remind(UUID userId, UUID groupId, UUID pollId) {
         Group group = requireMember(groupId, userId);
-        requireOwner(group, userId, "모임장만 응답을 재촉할 수 있어요.");
         DatePoll poll = findPoll(groupId, pollId, false);
+        requireManager(group, poll, userId, "조율을 만든 사람이나 모임장만 응답을 재촉할 수 있어요.");
         requireOpen(poll);
         List<User> members = members(groupId);
         Tally tally = tally(poll, members);
         List<User> waiting = members.stream().filter(u -> !tally.responded().containsKey(u.getId())).toList();
-        notify(waiting, userId, groupId, group.getCreatedBy().getNickname() + "님이 '" + shortTitle(poll)
+        notify(waiting, userId, groupId, nickname(members, userId) + "님이 '" + shortTitle(poll)
                 + "' 날짜 조율에 응답을 기다리고 있어요. 가능한 날을 골라 주세요.");
     }
 
@@ -172,8 +173,8 @@ public class DatePollService {
     @Transactional
     public DatePollDetail confirm(UUID userId, UUID groupId, UUID pollId, ConfirmRequest request) {
         Group group = requireMember(groupId, userId);
-        requireOwner(group, userId, "모임장만 날짜를 정할 수 있어요.");
         DatePoll poll = findPoll(groupId, pollId, true);
+        requireManager(group, poll, userId, "조율을 만든 사람이나 모임장만 날짜를 정할 수 있어요.");
         requireOpen(poll);
         if (!poll.contains(request.date())) {
             throw new BadRequestException("후보 기간 안의 날짜로 정해 주세요.");
@@ -200,7 +201,7 @@ public class DatePollService {
 
         // 일정 참여자는 일정 생성 경로의 '참여자로 추가' 알림을 이미 받으므로 확정 알림에서 뺀다.
         notify(members.stream().filter(u -> !participants.contains(u.getId())).toList(), userId, groupId,
-                group.getCreatedBy().getNickname() + "님이 '" + shortTitle(poll)
+                nickname(members, userId) + "님이 '" + shortTitle(poll)
                         + "' 날짜를 " + label(request.date()) + "로 정했어요.");
         publishChange(groupId, members);
         return detail(poll, members, userId);
@@ -210,8 +211,8 @@ public class DatePollService {
     @Transactional
     public void delete(UUID userId, UUID groupId, UUID pollId) {
         Group group = requireMember(groupId, userId);
-        requireOwner(group, userId, "모임장만 날짜 조율을 지울 수 있어요.");
         DatePoll poll = findPoll(groupId, pollId, true);
+        requireManager(group, poll, userId, "조율을 만든 사람이나 모임장만 날짜 조율을 지울 수 있어요.");
         voteRepository.deleteAllByPollId(pollId);
         pollRepository.delete(poll);
         pollRepository.flush();
@@ -420,10 +421,10 @@ public class DatePollService {
                 .toList();
     }
 
-    private static DatePollSummary summary(DatePoll poll, Tally tally, UUID viewerId, int memberCount) {
+    private static DatePollSummary summary(DatePoll poll, Tally tally, UUID viewerId, int memberCount, boolean canManage) {
         return new DatePollSummary(poll.getId(), poll.getTitle(), poll.getStartDate(), poll.getEndDate(),
                 poll.getStatus(), tally.responded().size(), memberCount, tally.responded().containsKey(viewerId),
-                poll.getConfirmedDate(), poll.getScheduleId(), poll.getCreatedAt());
+                poll.getConfirmedDate(), poll.getScheduleId(), poll.getCreatedAt(), canManage);
     }
 
     private DatePollDetail detail(DatePoll poll, List<User> members, UUID viewerId) {
@@ -440,7 +441,7 @@ public class DatePollService {
                 poll.getStatus(), responded.size(), members.size(), tally.responded().containsKey(viewerId),
                 poll.getConfirmedDate(), poll.getScheduleId(), poll.getCreatedAt(),
                 pollUser(poll.getCreator()), List.copyOf(tally.responded().getOrDefault(viewerId, Set.of())),
-                dates, best(dates), responded, notResponded, ai);
+                dates, best(dates), responded, notResponded, ai, canManage(poll.getGroup(), poll, viewerId));
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────
@@ -454,10 +455,21 @@ public class DatePollService {
         return group;
     }
 
-    private static void requireOwner(Group group, UUID userId, String message) {
-        if (!group.getCreatedBy().getId().equals(userId)) {
+    /** 재촉·정하기·지우기: 그 조율을 만든 사람 또는 모임장 */
+    private static boolean canManage(Group group, DatePoll poll, UUID userId) {
+        return poll.getCreator().getId().equals(userId) || group.getCreatedBy().getId().equals(userId);
+    }
+
+    private static void requireManager(Group group, DatePoll poll, UUID userId, String message) {
+        if (!canManage(group, poll, userId)) {
             throw new UnauthorizedAccessException(message);
         }
+    }
+
+    /** 알림 문구에 쓸, 실제로 행동한 사람의 닉네임 */
+    private String nickname(List<User> members, UUID userId) {
+        return members.stream().filter(u -> u.getId().equals(userId)).findFirst()
+                .orElseGet(() -> userRepository.getReferenceById(userId)).getNickname();
     }
 
     private static void requireOpen(DatePoll poll) {

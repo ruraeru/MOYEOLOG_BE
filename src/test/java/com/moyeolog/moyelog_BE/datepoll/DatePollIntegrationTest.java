@@ -146,10 +146,10 @@ class DatePollIntegrationTest {
     }
 
     @Test
-    @DisplayName("권한: 비멤버는 403, 만들기·재촉·정하기·지우기는 모임장만. 만들기 검증과 알림")
+    @DisplayName("권한: 비멤버는 403, 만들기는 멤버 누구나, 재촉·정하기·지우기는 만든 사람이나 모임장만. 만들기 검증과 알림")
     void permissionsAndValidation() throws Exception {
-        Session owner = login("방장"), member = login("멤버"), outsider = login("바깥");
-        String groupId = createGroup(owner, member);
+        Session owner = login("방장"), member = login("멤버"), other = login("다른"), outsider = login("바깥");
+        String groupId = createGroup(owner, member, other);
 
         // 만들기 검증
         assertThat(createPoll(owner, groupId, "어제부터", LocalDate.now().minusDays(1), d1).getResponse().getStatus()).isEqualTo(400);
@@ -160,14 +160,21 @@ class DatePollIntegrationTest {
         assertThat(createPoll(owner, groupId, "딱 31일", LocalDate.now(), LocalDate.now().plusDays(30))
                 .getResponse().getStatus()).isEqualTo(201);
 
-        long before = notificationCount(member);
-        assertThat(createPoll(member, groupId, "멤버가", d1, d2).getResponse().getStatus()).isEqualTo(403);
-        String pollId = openPoll(owner, groupId);
-        assertThat(notificationCount(member)).isEqualTo(before + 1);
+        // 멤버도 만들 수 있다. 만든 사람은 그 멤버이고, 알림 문구의 이름도 그 멤버다.
+        long before = notificationCount(owner);
+        String pollId = openPoll(member, groupId);
+        assertThat(notificationCount(owner)).isEqualTo(before + 1);
         String link = jdbcTemplate.queryForObject(
                 "SELECT link FROM notifications WHERE recipient_id = ? ORDER BY created_at DESC LIMIT 1",
-                String.class, UUID.fromString(member.userId()));
+                String.class, UUID.fromString(owner.userId()));
         assertThat(link).isEqualTo("/groups/" + groupId + "?tab=calendar");
+        assertThat(count("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND message LIKE ?",
+                UUID.fromString(owner.userId()), "멤버님이 '송년회' 날짜 조율을 시작했어요%")).isEqualTo(1);
+        JsonNode created = detail(member, groupId, pollId);
+        assertThat(created.path("creator").path("nickname").asText()).isEqualTo("멤버");
+        assertThat(created.path("canManage").asBoolean()).isTrue();
+        assertThat(detail(owner, groupId, pollId).path("canManage").asBoolean()).isTrue();
+        assertThat(detail(other, groupId, pollId).path("canManage").asBoolean()).isFalse();
 
         // 비멤버: 목록·상세·선택·추천 403
         mockMvc.perform(auth(get(base(groupId)), outsider)).andExpect(status().isForbidden());
@@ -175,31 +182,51 @@ class DatePollIntegrationTest {
         assertThat(vote(outsider, groupId, pollId, d1).getResponse().getStatus()).isEqualTo(403);
         mockMvc.perform(auth(post(base(groupId) + "/" + pollId + "/recommend"), outsider)).andExpect(status().isForbidden());
 
-        // 멤버: 모임장 전용 403
-        mockMvc.perform(auth(post(base(groupId) + "/" + pollId + "/remind"), member)).andExpect(status().isForbidden());
-        mockMvc.perform(jsonBody(auth(post(base(groupId) + "/" + pollId + "/confirm"), member),
+        // 만든 사람도 모임장도 아닌 멤버: 재촉·정하기·지우기 403
+        mockMvc.perform(auth(post(base(groupId) + "/" + pollId + "/remind"), other)).andExpect(status().isForbidden());
+        mockMvc.perform(jsonBody(auth(post(base(groupId) + "/" + pollId + "/confirm"), other),
                 Map.of("date", d1.toString(), "startTime", "19:00"))).andExpect(status().isForbidden());
-        mockMvc.perform(auth(delete(base(groupId) + "/" + pollId), member)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(delete(base(groupId) + "/" + pollId), other)).andExpect(status().isForbidden());
 
         // 다른 모임 경로로는 찾을 수 없다
         String otherGroup = createGroup(member);
         mockMvc.perform(auth(get(base(otherGroup) + "/" + pollId), member)).andExpect(status().isNotFound());
 
-        // 재촉: 아직 응답 안 한 멤버에게만
-        assertThat(vote(owner, groupId, pollId, d1).getResponse().getStatus()).isEqualTo(200);
-        long ownerBefore = notificationCount(owner), memberBefore = notificationCount(member);
+        // 재촉: 만든 사람이 하면 아직 응답 안 한 멤버에게만, 이름은 재촉한 사람
+        assertThat(vote(member, groupId, pollId, d1).getResponse().getStatus()).isEqualTo(200);
+        long memberBefore = notificationCount(member), otherBefore = notificationCount(other), ownerBefore = notificationCount(owner);
+        mockMvc.perform(auth(post(base(groupId) + "/" + pollId + "/remind"), member)).andExpect(status().isNoContent());
+        assertThat(notificationCount(other)).isEqualTo(otherBefore + 1);
+        assertThat(notificationCount(owner)).isEqualTo(ownerBefore + 1);
+        assertThat(notificationCount(member)).isEqualTo(memberBefore);
+        assertThat(count("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND message LIKE ?",
+                UUID.fromString(other.userId()), "멤버님이 '송년회' 날짜 조율에 응답을%")).isEqualTo(1);
+        // 모임장도 남이 만든 조율을 재촉할 수 있다
         mockMvc.perform(auth(post(base(groupId) + "/" + pollId + "/remind"), owner)).andExpect(status().isNoContent());
-        assertThat(notificationCount(member)).isEqualTo(memberBefore + 1);
-        assertThat(notificationCount(owner)).isEqualTo(ownerBefore);
+        assertThat(count("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND message LIKE ?",
+                UUID.fromString(other.userId()), "방장님이 '송년회' 날짜 조율에 응답을%")).isEqualTo(1);
 
-        // 목록: 진행 중 두 개
-        JsonNode list = json(mockMvc.perform(auth(get(base(groupId)), member)).andExpect(status().isOk()).andReturn());
+        // 목록: 진행 중 두 개, canManage 는 보는 사람 기준
+        JsonNode list = json(mockMvc.perform(auth(get(base(groupId)), other)).andExpect(status().isOk()).andReturn());
         assertThat(list.size()).isEqualTo(2);
         assertThat(list.get(0).path("id").asText()).isEqualTo(pollId);
         assertThat(list.get(0).path("respondedCount").asInt()).isEqualTo(1);
-        assertThat(list.get(0).path("memberCount").asInt()).isEqualTo(2);
+        assertThat(list.get(0).path("memberCount").asInt()).isEqualTo(3);
         assertThat(list.get(0).path("myResponded").asBoolean()).isFalse();
         assertThat(list.get(0).path("startDate").asText()).isEqualTo(d1.toString());
+        assertThat(list.get(0).path("canManage").asBoolean()).isFalse();
+        JsonNode mine = json(mockMvc.perform(auth(get(base(groupId)), member)).andExpect(status().isOk()).andReturn());
+        assertThat(mine.get(0).path("canManage").asBoolean()).isTrue();
+        assertThat(mine.get(1).path("canManage").asBoolean()).isFalse(); // 모임장이 만든 '딱 31일'
+
+        // 만든 사람이 정하면 일정이 생기고, 확정 알림의 이름도 정한 사람이다
+        JsonNode confirmed = json(mockMvc.perform(jsonBody(auth(post(base(groupId) + "/" + pollId + "/confirm"), member),
+                Map.of("date", d1.toString(), "startTime", "19:00"))).andExpect(status().isOk()).andReturn());
+        assertThat(confirmed.path("status").asText()).isEqualTo("CONFIRMED");
+        assertThat(count("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND message LIKE ?",
+                UUID.fromString(other.userId()), "멤버님이 '송년회' 날짜를 %")).isEqualTo(1);
+        // 모임장은 남이 만든 조율도 지울 수 있다
+        mockMvc.perform(auth(delete(base(groupId) + "/" + pollId), owner)).andExpect(status().isNoContent());
     }
 
     @Test
