@@ -351,7 +351,7 @@ public class GroupService {
      * - 최근에 거절한 사람은 일반 멤버가 일정 기간 다시 초대하지 못한다(건너뜀, 아무도 초대되지 않으면 409).
      */
     @Transactional
-    public void inviteMembers(UUID inviterId, UUID groupId, GroupInviteRequest request) {
+    public GroupInviteResponse inviteMembers(UUID inviterId, UUID groupId, GroupInviteRequest request) {
         if (request != null && request.getEmails() != null) {
             throw badRequest("이메일 초대는 더 이상 지원하지 않아요. 친구를 골라 초대해 주세요.");
         }
@@ -382,9 +382,14 @@ public class GroupService {
         LocalDateTime cooldownFrom = LocalDateTime.now().minusDays(REINVITE_COOLDOWN_DAYS);
         int created = 0;
         int coolingDown = 0;
+        int alreadyInvited = 0;
+        int alreadyMember = 0;
         for (UUID userId : userIds) {
             User invitee = findUserById(userId);
-            if (isMember(groupId, userId)) continue;
+            if (isMember(groupId, userId)) {
+                alreadyMember++;
+                continue;
+            }
 
             if (groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, userId)) {
                 if (!inviterIsOwner) {
@@ -392,7 +397,10 @@ public class GroupService {
                 }
                 groupBlockRepository.deleteBlock(groupId, userId);
             }
-            if (groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)) continue;
+            if (groupInvitationRepository.existsByGroupAndInviteeAndStatus(group, invitee, InvitationStatus.PENDING)) {
+                alreadyInvited++;
+                continue;
+            }
             if (!inviterIsOwner && groupInvitationRepository.existsByGroup_IdAndInvitee_IdAndStatusAndRespondedAtAfter(
                     groupId, userId, InvitationStatus.REJECTED, cooldownFrom)) {
                 coolingDown++;
@@ -415,6 +423,11 @@ public class GroupService {
         if (created == 0 && coolingDown > 0) {
             throw conflict("최근에 초대를 거절한 친구예요. 며칠 뒤에 다시 초대해 주세요.");
         }
+        return GroupInviteResponse.builder()
+                .invitedCount(created)
+                .alreadyInvitedCount(alreadyInvited)
+                .alreadyMemberCount(alreadyMember)
+                .build();
     }
 
     @Transactional(readOnly = true)
@@ -429,6 +442,9 @@ public class GroupService {
                         .inviterNickname(i.getInviter().getNickname())
                         .status(i.getStatus())
                         .invitedAt(i.getInvitedAt())
+                        .groupDescription(i.getGroup().getDescription())
+                        .memberCount(distinctMembers(i.getGroup()).size())
+                        .ownerNickname(i.getGroup().getCreatedBy().getNickname())
                         .build())
                 .collect(Collectors.toList());
     }
