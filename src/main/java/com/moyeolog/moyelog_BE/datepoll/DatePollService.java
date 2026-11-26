@@ -104,7 +104,7 @@ public class DatePollService {
                 .build());
 
         List<User> members = members(groupId);
-        notify(members, userId, groupId, nickname(members, userId) + "님이 '" + shortTitle(poll)
+        notify(members, userId, groupId, poll.getId(), nickname(members, userId) + "님이 '" + shortTitle(poll)
                 + "' 날짜 조율을 시작했어요. 가능한 날을 골라 주세요.");
         publishChange(groupId, members);
         return detail(poll, members, userId);
@@ -165,7 +165,7 @@ public class DatePollService {
         List<User> members = members(groupId);
         Tally tally = tally(poll, members);
         List<User> waiting = members.stream().filter(u -> !tally.responded().containsKey(u.getId())).toList();
-        notify(waiting, userId, groupId, nickname(members, userId) + "님이 '" + shortTitle(poll)
+        notify(waiting, userId, groupId, poll.getId(), nickname(members, userId) + "님이 '" + shortTitle(poll)
                 + "' 날짜 조율에 응답을 기다리고 있어요. 가능한 날을 골라 주세요.");
     }
 
@@ -200,7 +200,7 @@ public class DatePollService {
         pollRepository.flush();
 
         // 일정 참여자는 일정 생성 경로의 '참여자로 추가' 알림을 이미 받으므로 확정 알림에서 뺀다.
-        notify(members.stream().filter(u -> !participants.contains(u.getId())).toList(), userId, groupId,
+        notify(members.stream().filter(u -> !participants.contains(u.getId())).toList(), userId, groupId, poll.getId(),
                 nickname(members, userId) + "님이 '" + shortTitle(poll)
                         + "' 날짜를 " + label(request.date()) + "로 정했어요.");
         publishChange(groupId, members);
@@ -279,12 +279,14 @@ public class DatePollService {
                 + "Candidate dates (date (weekday): available count - names):\n" + data
                 + "Rules:\n"
                 + "1. summary: 2 to 4 complete sentences IN KOREAN (polite 해요체) describing the availability, "
-                + "mentioning who has not responded if relevant.\n"
+                + "mentioning who has not responded if relevant. End EVERY sentence with ~요 (e.g. 가능해요, 않았어요); "
+                + "never use ~습니다 or ~네요.\n"
                 + "2. recommended: 1 to 3 dates, best first. Each item has date (MUST be one of the candidate dates above, "
                 + "format yyyy-MM-dd) and reason (one short sentence IN KOREAN). Prefer dates where more members are available. "
                 + "NEVER recommend a date whose available count is 0.\n"
                 + "3. Write summary and reasons ONLY in Korean Hangul. Do not use Chinese characters (Hanja), Japanese or English words. "
-                + "State counts exactly as given above.\n"
+                + "State counts exactly as given above. Write member names exactly as given and attach particles directly "
+                + "(e.g. 민지는, not 민지 는). Write dates like 11월 29일 (no space between a number and 월/일/명).\n"
                 + "Return the result STRICTLY as a JSON object: "
                 + "{\"summary\": string, \"recommended\": [{\"date\": string, \"reason\": string}]}.";
         return new AiInput(prompt, tally.hash(), best(dates), counts, members.size(), tally.responded().size());
@@ -304,7 +306,7 @@ public class DatePollService {
                 LocalDate date = parseDate(map.get("date"));
                 // 후보 밖 날짜와 가능한 사람이 0명인 날은 버린다(LLM 이 실제로 0명인 날을 추천한 적이 있다).
                 if (date == null || input.counts().getOrDefault(date, 0) == 0 || !seen.add(date)) continue;
-                String reason = clip(text(map.get("reason")), 200);
+                String reason = clip(tidy(text(map.get("reason"))), 200);
                 recommended.add(new Recommendation(date,
                         usable(reason) ? reason : fallbackReason(input, date)));
             }
@@ -312,7 +314,7 @@ public class DatePollService {
         if (recommended.isEmpty()) {
             input.best().forEach(d -> recommended.add(new Recommendation(d, fallbackReason(input, d))));
         }
-        String summary = clip(text(result.get("summary")), 600);
+        String summary = clip(tidy(text(result.get("summary"))), 600);
         if (!usable(summary)) {
             summary = input.memberCount() + "명 중 " + input.respondedCount() + "명이 응답했어요.";
         }
@@ -332,8 +334,21 @@ public class DatePollService {
         return !text.isEmpty() && !CJK_NOT_KOREAN.matcher(text).find();
     }
 
+    /** 다른 이유(LLM 문장)와 형식을 맞춰 한 문장으로 쓴다 */
     private static String fallbackReason(AiInput input, LocalDate date) {
-        return input.memberCount() + "명 중 " + input.counts().getOrDefault(date, 0) + "명 가능";
+        return input.memberCount() + "명 중 " + input.counts().getOrDefault(date, 0) + "명이 가능해요.";
+    }
+
+    /** 숫자와 단위 사이('11 월', '2 명')의 공백 */
+    private static final java.util.regex.Pattern NUMBER_UNIT_SPACE = java.util.regex.Pattern.compile("(\\d) +(월|일|명|시|분)");
+    /** 영문·숫자로 끝나는 이름과 조사 사이('큐에이20b 는')의 공백 */
+    private static final java.util.regex.Pattern NAME_PARTICLE_SPACE =
+            java.util.regex.Pattern.compile("([0-9A-Za-z]) +(은|는|이|가|을|를|와|과|도|의|에게|만)(?=[\\s.,!?]|$)");
+
+    /** LLM(qwen)이 한국어를 토큰 단위로 띄어 쓰는 것('11 월 29 일', '20b 는')을 붙인다 */
+    static String tidy(String text) {
+        String result = NUMBER_UNIT_SPACE.matcher(text).replaceAll("$1$2");
+        return NAME_PARTICLE_SPACE.matcher(result).replaceAll("$1$2");
     }
 
     private String writeRecommendations(List<Recommendation> recommended) {
@@ -496,9 +511,9 @@ public class DatePollService {
         return new ArrayList<>(members.values());
     }
 
-    /** 알림은 새 종류 없이 '일정 참여' 설정을 쓴다(중간 지점과 같다). 누르면 그 모임의 일정 탭. */
-    private void notify(List<User> recipients, UUID actorId, UUID groupId, String message) {
-        String link = "/groups/" + groupId + "?tab=calendar";
+    /** 알림은 새 종류 없이 '일정 참여' 설정을 쓴다(중간 지점과 같다). 누르면 그 모임의 일정 탭에서 그 조율 창이 열린다. */
+    private void notify(List<User> recipients, UUID actorId, UUID groupId, UUID pollId, String message) {
+        String link = "/groups/" + groupId + "?tab=calendar&poll=" + pollId;
         for (User recipient : recipients) {
             if (recipient.getId().equals(actorId)) continue;
             eventPublisher.publishEvent(new NotificationEvent(recipient.getId(), actorId,
