@@ -283,7 +283,8 @@ public class DatePollService {
                 + "mentioning who has not responded if relevant. End EVERY sentence with ~요 (e.g. 가능해요, 않았어요); "
                 + "never use ~습니다 or ~네요.\n"
                 + "2. recommended: 1 to 3 dates, best first. Each item has date (MUST be one of the candidate dates above, "
-                + "format yyyy-MM-dd) and reason (one short sentence IN KOREAN). Prefer dates where more members are available. "
+                + "format yyyy-MM-dd) and reason (one short sentence IN KOREAN, polite 해요체 like the summary: end with ~요, "
+                + "e.g. 가장 많이 가능해요; never ~습니다). Prefer dates where more members are available. "
                 + "NEVER recommend a date whose available count is 0.\n"
                 + "3. Write summary and reasons ONLY in Korean Hangul. Do not use Chinese characters (Hanja), Japanese or English words. "
                 + "State counts exactly as given above. Write member names exactly as given and attach particles directly "
@@ -377,7 +378,52 @@ public class DatePollService {
                     .replaceAll(java.util.regex.Matcher.quoteReplacement(name));
         }
         result = NUMBER_UNIT_SPACE.matcher(result).replaceAll("$1$2");
-        return NAME_PARTICLE_SPACE.matcher(result).replaceAll("$1$2");
+        result = NAME_PARTICLE_SPACE.matcher(result).replaceAll("$1$2");
+        return toHaeyo(result);
+    }
+
+    /** 문장 끝(뒤에 . ! ? 하나까지, 그다음 공백·끝) */
+    private static final String SENTENCE_END = "(?=[.!?]?(?:\\s|$))";
+    /** 받침 ㅆ 인 글자(있·었·았·였·했·됐·겠 …) + 습니다 → 어요 */
+    private static final java.util.regex.Pattern SSEUMNIDA = java.util.regex.Pattern.compile("(\\S)습니다" + SENTENCE_END);
+    /** 어간 + 습니다 → 어간 + 아요/어요 가 규칙대로인 낱말만(불규칙 '가깝습니다' 같은 것은 건드리지 않는다) */
+    private static final java.util.regex.Pattern REGULAR_SEUMNIDA =
+            java.util.regex.Pattern.compile("(좋|많|않|높|낮|같|없|적|늦)습니다" + SENTENCE_END);
+    private static final java.util.regex.Pattern HAMNIDA = java.util.regex.Pattern.compile("합니다" + SENTENCE_END);
+    private static final java.util.regex.Pattern DOEMNIDA = java.util.regex.Pattern.compile("됩니다" + SENTENCE_END);
+    /** 한글 + 입니다 → 받침 있으면 이에요, 없으면 예요 */
+    private static final java.util.regex.Pattern IMNIDA = java.util.regex.Pattern.compile("([가-힣])입니다" + SENTENCE_END);
+
+    /**
+     * LLM 이 프롬프트를 어기고 쓴 문장 끝 '~습니다/합니다/됩니다/입니다' 중 기계적으로 바꿔도 뜻이 같은 꼴만 해요체로 바꾼다.
+     * 받침 ㅆ + 습니다(있습니다·했습니다·겠습니다), 규칙 활용 어간 몇 개(좋·많·않·높·낮·같·없·적·늦), 합니다→해요, 됩니다→돼요,
+     * 한글 + 입니다(받침에 따라 이에요/예요). 그 밖의 ~ㅂ니다(갑니다·가깝습니다 등)는 활용이 불규칙할 수 있어 그대로 둔다.
+     */
+    static String toHaeyo(String text) {
+        String result = SSEUMNIDA.matcher(text).replaceAll(m -> {
+            String last = m.group(1);
+            return finalConsonant(last) == 20 ? java.util.regex.Matcher.quoteReplacement(last + "어요") : java.util.regex.Matcher.quoteReplacement(m.group());
+        });
+        result = REGULAR_SEUMNIDA.matcher(result).replaceAll(m -> {
+            String stem = m.group(1);
+            char lastChar = stem.charAt(0);
+            // 마지막 모음이 ㅏ·ㅗ 면 아요(좋아요·많아요·않아요·높아요·낮아요·같아요), 아니면 어요(없어요·적어요·늦어요)
+            int vowel = ((lastChar - 0xAC00) / 28) % 21;
+            String ending = (vowel == 0 || vowel == 8) ? "아요" : "어요";
+            return java.util.regex.Matcher.quoteReplacement(stem + ending);
+        });
+        result = HAMNIDA.matcher(result).replaceAll("해요");
+        result = DOEMNIDA.matcher(result).replaceAll("돼요");
+        return IMNIDA.matcher(result).replaceAll(m -> {
+            String last = m.group(1);
+            return java.util.regex.Matcher.quoteReplacement(last + (finalConsonant(last) == 0 ? "예요" : "이에요"));
+        });
+    }
+
+    /** 한글 음절의 받침 번호(0 = 없음, 20 = ㅆ). 한글 음절이 아니면 -1 */
+    private static int finalConsonant(String syllable) {
+        char c = syllable.charAt(0);
+        return c >= 0xAC00 && c <= 0xD7A3 ? (c - 0xAC00) % 28 : -1;
     }
 
     private String writeRecommendations(List<Recommendation> recommended) {

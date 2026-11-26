@@ -33,4 +33,28 @@ class DatePollTidyTest {
         assertThat(DatePollService.tidy("김민지 와 a. b+c 는 가능해요.", List.of("김 민지", "a.b+c")))
                 .isEqualTo("김 민지 와 a.b+c는 가능해요.");
     }
+
+    @Test
+    @DisplayName("q20-053: 문장 끝 ~습니다/합니다/됩니다/입니다 중 바꿔도 뜻이 같은 꼴만 해요체로")
+    void toHaeyo() {
+        // 재검증 때 실제로 나온 이유·요약 문장
+        assertThat(DatePollService.tidy("11월 29일에 2명이 가능하므로 가장 좋습니다.", List.of()))
+                .isEqualTo("11월 29일에 2명이 가능하므로 가장 좋아요.");
+        assertThat(DatePollService.tidy("다른 날짜보다 선택의 여지가 있습니다.", List.of()))
+                .isEqualTo("다른 날짜보다 선택의 여지가 있어요.");
+        assertThat(DatePollService.tidy("가능한 사람이 없어요. 28일에는 0명의 참여자가 있습니다.", List.of()))
+                .isEqualTo("가능한 사람이 없어요. 28일에는 0명의 참여자가 있어요.");
+        // 받침 ㅆ + 습니다, 규칙 어간, 합니다·됩니다, 입니다(받침에 따라)
+        assertThat(DatePollService.toHaeyo("아직 응답하지 않았습니다. 모두 가능하겠습니다! 사람이 많습니다 날짜가 같습니다"))
+                .isEqualTo("아직 응답하지 않았어요. 모두 가능하겠어요! 사람이 많아요 날짜가 같아요");
+        assertThat(DatePollService.toHaeyo("이 날을 추천합니다. 모두 참석하게 됩니다. 가장 좋은 날입니다. 첫 후보 날짜입니다."))
+                .isEqualTo("이 날을 추천해요. 모두 참석하게 돼요. 가장 좋은 날이에요. 첫 후보 날짜예요.");
+        assertThat(DatePollService.toHaeyo("가능한 사람이 없습니다. 인원이 적습니다. 응답이 늦습니다."))
+                .isEqualTo("가능한 사람이 없어요. 인원이 적어요. 응답이 늦어요.");
+        // 불규칙일 수 있는 꼴과 문장 중간은 건드리지 않는다
+        assertThat(DatePollService.toHaeyo("거리가 가깝습니다. 모두 갑니다. 있습니다만 어렵습니다."))
+                .isEqualTo("거리가 가깝습니다. 모두 갑니다. 있습니다만 어렵습니다.");
+        // 이미 해요체면 그대로
+        assertThat(DatePollService.toHaeyo("11월 29일이 가장 좋아요.")).isEqualTo("11월 29일이 가장 좋아요.");
+    }
 }
