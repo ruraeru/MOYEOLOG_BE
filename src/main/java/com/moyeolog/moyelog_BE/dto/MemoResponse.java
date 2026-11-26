@@ -31,7 +31,7 @@ public class MemoResponse {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private Long version; // 수정 요청에 그대로 돌려보내면 낙관적 잠금
-    private LocalDateTime pinnedAt; // 고정한 시각(없으면 null). 개인 메모의 고정은 작성자에게만 보인다
+    private LocalDateTime pinnedAt; // 고정한 시각(없으면 null). 모임 메모는 모임 공통, 개인 메모는 보는 사람 본인의 고정
     private Permissions permissions; // 요청한 사용자 기준
 
     @Getter

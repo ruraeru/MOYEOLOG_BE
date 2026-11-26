@@ -61,6 +61,7 @@ class GroupServiceTest {
     @Mock private DatePollRepository datePollRepository;
     @Mock private DatePollVoteRepository datePollVoteRepository;
     @Mock private MemoGroupShareRepository memoGroupShareRepository;
+    @Mock private MemoPinRepository memoPinRepository;
     @Mock private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private GroupService groupService;
@@ -238,6 +239,8 @@ class GroupServiceTest {
         verify(groupBlockRepository).save(any(GroupBlock.class));
         verify(groupInvitationRepository).deletePendingForInvitee(groupId, targetUserId);
         verify(groupInvitationRepository).deletePendingFromInviter(groupId, targetUserId);
+        // 이 모임으로 공유받아 고정한 개인 메모의 고정도 지운다
+        verify(memoPinRepository).deleteByUserIdAndGroupSharedMemos(targetUserId, groupId);
         assertThat(group.getInviteCode()).isNotNull().isNotEqualTo("OLDCOD").hasSize(6);
         ArgumentCaptor<NotificationEvent> event = ArgumentCaptor.forClass(NotificationEvent.class);
         verify(eventPublisher).publishEvent(event.capture());
@@ -257,6 +260,7 @@ class GroupServiceTest {
         assertThatThrownBy(() -> groupService.kickMember(userId, groupId, targetUserId))
                 .satisfies(t -> assertThat(statusOf(t)).isEqualTo(HttpStatus.NOT_FOUND));
         verify(groupBlockRepository, never()).save(any());
+        verify(memoPinRepository, never()).deleteByUserIdAndGroupSharedMemos(any(), any());
     }
 
     @Test
@@ -289,8 +293,11 @@ class GroupServiceTest {
 
         groupService.leaveGroup(userId, otherGroupId);
         verify(groupInvitationRepository).deletePendingFromInviter(otherGroupId, userId);
+        verify(memoPinRepository).deleteByUserIdAndGroupSharedMemos(userId, otherGroupId);
         assertThatThrownBy(() -> groupService.leaveGroup(userId, otherGroupId))
                 .isInstanceOf(UnauthorizedAccessException.class);
+        // 이미 나간 경우(두 번째 호출)는 고정을 다시 지우지 않는다
+        verify(memoPinRepository, times(1)).deleteByUserIdAndGroupSharedMemos(userId, otherGroupId);
     }
 
     @Test

@@ -28,6 +28,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,7 +47,8 @@ import java.util.stream.Collectors;
  * - 수정·태그: 개인 메모는 작성자, 모임 메모는 현재 모임 멤버 (나간·강퇴된 작성자는 수정 불가),
  *   그리고 '수정 가능'으로 공유받은 친구. 친구 공유는 기본 읽기 전용, 모임에 공유한 개인 메모는 늘 읽기 전용.
  * - 삭제·공유·공유 해제·분석: 작성자
- * - 고정: 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장(모임 전체에 고정), 개인 메모는 작성자(본인에게만 고정)
+ * - 고정: 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장(memos.pinned_at, 모임 전체에 고정),
+ *   개인 메모는 읽을 수 있는 사람 누구나(memo_pins, 사용자별. 고정한 본인에게만 보인다)
  * - 즐겨찾기: 읽을 수 있는 사람 누구나, 사용자별 (모임 메모 포함. 모임 화면에서는 별을 숨기고 고정을 쓴다)
  */
 @Service
@@ -67,6 +69,7 @@ public class MemoService {
     private final ScheduleRepository scheduleRepository;
     private final FriendRepository friendRepository;
     private final MemoFavoriteRepository memoFavoriteRepository;
+    private final MemoPinRepository memoPinRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     private static final int MAX_TAG_LENGTH = 50;
@@ -143,10 +146,11 @@ public class MemoService {
         if (memoShareRepository.deleteByMemoIdAndUserId(memoId, targetUserId) == 0) {
             throw new ItemNotFoundException("이 메모를 공유받은 사람이 아니에요.");
         }
-        // 더 이상 읽을 수 없게 된 사람의 즐겨찾기도 지운다 (다시 공유해도 즐겨찾기가 되살아나지 않도록).
+        // 더 이상 읽을 수 없게 된 사람의 즐겨찾기·고정도 지운다 (다시 공유해도 되살아나지 않도록).
         if (!isCurrentGroupMember(memo, targetUserId)
                 && !memoGroupShareRepository.existsSharedToMember(memoId, targetUserId)) {
             memoFavoriteRepository.deleteByUserIdAndMemoId(targetUserId, memoId);
+            memoPinRepository.deleteByUserIdAndMemoId(targetUserId, memoId);
         }
         audience.publish(eventPublisher);
     }
@@ -178,6 +182,15 @@ public class MemoService {
         if (memoGroupShareRepository.deleteByMemoIdAndGroupId(memoId, groupId) == 0) {
             throw new ItemNotFoundException("이 모임에 공유한 메모가 아니에요.");
         }
+        // 이 공유로만 읽던 모임 멤버의 고정을 지운다 (모임에 공유되는 것은 개인 메모뿐이다).
+        for (GroupMember member : groupMemberRepository.findAllByGroup_IdOrderByJoinedAtAsc(groupId)) {
+            UUID memberId = member.getUser().getId();
+            if (!memberId.equals(authorId)
+                    && !memoShareRepository.existsByMemo_IdAndSharedTo_Id(memoId, memberId)
+                    && !memoGroupShareRepository.existsSharedToMember(memoId, memberId)) {
+                memoPinRepository.deleteByUserIdAndMemoId(memberId, memoId);
+            }
+        }
         audience.publish(eventPublisher);
     }
 
@@ -186,10 +199,12 @@ public class MemoService {
         User user = findUserById(userId);
         Viewer viewer = viewer(user);
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
+        Map<UUID, LocalDateTime> pins = pinnedAts(userId);
         return memoShareRepository.findBySharedToOrderBySharedAtDesc(user).stream()
                 .map(MemoShare::getMemo)
                 .distinct()
-                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
+                .sorted(pinnedFirst(pins))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds, pins))
                 .collect(Collectors.toList());
     }
 
@@ -242,11 +257,12 @@ public class MemoService {
         User author = findUserById(userId);
         Viewer viewer = viewer(author);
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
+        Map<UUID, LocalDateTime> pins = pinnedAts(userId);
         String keyword = q == null ? "" : q.trim().toLowerCase(Locale.ROOT);
         return memoRepository.findAllByAuthorOrderByCreatedAtDesc(author).stream()
                 .filter(memo -> keyword.isEmpty() || contains(memo.getTitle(), keyword) || contains(memo.getContent(), keyword))
-                .sorted(pinnedFirst(viewer))
-                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
+                .sorted(pinnedFirst(pins))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds, pins))
                 .collect(Collectors.toList());
     }
 
@@ -259,10 +275,11 @@ public class MemoService {
         if (favoriteIds.isEmpty()) {
             return new ArrayList<>();
         }
+        Map<UUID, LocalDateTime> pins = pinnedAts(userId);
         return memoRepository.findAllById(favoriteIds).stream()
                 .filter(memo -> canRead(memo, viewer))
                 .sorted(Comparator.comparing(Memo::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
-                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds, pins))
                 .collect(Collectors.toList());
     }
 
@@ -372,12 +389,13 @@ public class MemoService {
         requireGroupMember(groupId, userId);
         Viewer viewer = viewer(findUserById(userId));
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
+        Map<UUID, LocalDateTime> pins = pinnedAts(userId);
         List<Memo> memos = new ArrayList<>(memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId));
         // 모임 고정(공지)을 맨 위로. 공유된 개인 메모는 모임 고정 대상이 아니라 그 뒤에 그대로 둔다.
-        memos.sort(pinnedFirst(viewer));
+        memos.sort(pinnedFirst(pins));
         memos.addAll(memoGroupShareRepository.findMemosByGroupId(groupId));
         return memos.stream()
-                .map(memo -> convertToResponse(memo, viewer, favoriteIds))
+                .map(memo -> convertToResponse(memo, viewer, favoriteIds, pins))
                 .collect(Collectors.toList());
     }
 
@@ -441,17 +459,31 @@ public class MemoService {
     }
 
     /**
-     * 고정·해제. 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장, 개인 메모는 작성자만.
+     * 고정·해제. 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장(모임 전체), 개인 메모는 읽을 수 있는 사람 누구나(본인에게만).
      * 이미 고정된 메모를 다시 고정하면 처음 고정한 시각을 둔다. 수정 시각·version·마지막 수정자는 바꾸지 않는다.
      */
     @Transactional
     public MemoResponse pinMemo(UUID userId, UUID memoId, boolean pin) {
         Memo memo = findMemoForUpdate(memoId);
-        Viewer viewer = viewer(findUserById(userId));
+        User user = findUserById(userId);
+        Viewer viewer = viewer(user);
         if (!canPin(memo, viewer)) {
             throw new UnauthorizedAccessException(memo.getGroupId() != null
                     ? "모임 메모는 방장이나 작성자만 고정할 수 있어요."
-                    : "메모 작성자만 고정할 수 있어요.");
+                    : NO_READ_PERMISSION);
+        }
+        if (memo.getGroupId() == null) {
+            // 메모 행을 잠갔으므로 확인과 저장 사이에 같은 고정이 끼어들지 않는다.
+            boolean pinned = memoPinRepository.existsByUser_IdAndMemo_Id(userId, memoId);
+            if (pin && !pinned) {
+                memoPinRepository.save(MemoPin.builder().user(user).memo(memo).build());
+                ConcurrentUpdates.flush(memoPinRepository::flush);
+            } else if (!pin && pinned) {
+                memoPinRepository.deleteByUserIdAndMemoId(userId, memoId);
+            }
+            // 개인 고정은 나에게만 보인다(다른 탭·기기 반영)
+            eventPublisher.publishEvent(ChangeEvent.of(Set.of(userId), LiveTopics.MEMOS));
+            return convertToResponse(memo, viewer, null);
         }
         if (pin != (memo.getPinnedAt() != null)) {
             memoRepository.updatePinnedAt(memoId, pin ? LocalDateTime.now() : null);
@@ -462,13 +494,14 @@ public class MemoService {
         return convertToResponse(memo, viewer, null);
     }
 
-    /** 회원 탈퇴: 내 메모(와 그 공유·즐겨찾기·태그·연결), 나에게 온 공유, 내 즐겨찾기를 지운다. */
+    /** 회원 탈퇴: 내 메모(와 그 공유·즐겨찾기·고정·태그·연결), 나에게 온 공유, 내 즐겨찾기·고정을 지운다. */
     @EventListener
     @Transactional
     public void onUserDeleting(UserDeletingEvent event) {
         UUID userId = event.userId();
         memoShareRepository.deleteAllSharedTo(userId);
         memoFavoriteRepository.deleteAllByUserId(userId);
+        memoPinRepository.deleteAllByUserId(userId);
         for (Memo memo : memoRepository.findAllByAuthorId(userId)) {
             deleteMemoInternal(memo);
         }
@@ -504,6 +537,7 @@ public class MemoService {
         memoShareRepository.deleteAllByMemo(memo);
         memoGroupShareRepository.deleteAllByMemoId(memo.getId());
         memoFavoriteRepository.deleteAllByMemo(memo);
+        memoPinRepository.deleteAllByMemoId(memo.getId());
         if (memoAiInsightRepository.existsById(memo.getId())) {
             memoAiInsightRepository.deleteById(memo.getId());
         }
@@ -575,29 +609,48 @@ public class MemoService {
         return byRole || memoShareRepository.existsByMemo_IdAndSharedTo_IdAndCanEditTrue(memo.getId(), viewer.id());
     }
 
-    /** 고정 권한: 모임 메모는 현재 모임 멤버이면서 작성자 또는 방장, 개인 메모는 작성자. 모임에 공유된 개인 메모는 모임 고정 대상이 아니다. */
+    /** 고정 권한: 모임 메모는 현재 모임 멤버이면서 작성자 또는 방장, 개인 메모는 읽을 수 있는 사람 누구나(자기 고정). */
     private boolean canPin(Memo memo, Viewer viewer) {
-        boolean isAuthor = memo.getAuthor().getId().equals(viewer.id());
         if (memo.getGroupId() == null) {
-            return isAuthor;
+            return canRead(memo, viewer);
         }
         if (!viewer.isMemberOf(memo.getGroupId())) {
             return false;
         }
-        return isAuthor || groupRepository.findById(memo.getGroupId())
+        return memo.getAuthor().getId().equals(viewer.id()) || groupRepository.findById(memo.getGroupId())
                 .map(group -> group.getCreatedBy().getId().equals(viewer.id()))
                 .orElse(false);
     }
 
-    /** 이 사람에게 보이는 고정 시각: 모임 메모는 모두에게, 개인 메모의 고정은 작성자 본인에게만(그 밖은 null). */
-    private static LocalDateTime pinnedAtFor(Memo memo, Viewer viewer) {
-        boolean visible = memo.getGroupId() != null || memo.getAuthor().getId().equals(viewer.id());
-        return visible ? memo.getPinnedAt() : null;
+    /**
+     * 이 사람에게 보이는 고정 시각: 모임 메모는 모임 공통(memos.pinned_at), 개인 메모는 보는 사람 본인의 memo_pins.
+     * @param pins 미리 읽어 둔 보는 사람의 고정(memoId → 시각). null 이면 이 메모에 대해 개별 조회한다.
+     */
+    private LocalDateTime pinnedAtFor(Memo memo, Viewer viewer, Map<UUID, LocalDateTime> pins) {
+        if (memo.getGroupId() != null || pins != null) {
+            return pinnedAtIn(memo, pins);
+        }
+        return memoPinRepository.findFirstByUser_IdAndMemo_Id(viewer.id(), memo.getId())
+                .map(MemoPin::getPinnedAt)
+                .orElse(null);
+    }
+
+    private static LocalDateTime pinnedAtIn(Memo memo, Map<UUID, LocalDateTime> pins) {
+        return memo.getGroupId() != null ? memo.getPinnedAt() : pins.get(memo.getId());
+    }
+
+    /** 보는 사람의 개인 고정 전부를 한 번에 읽는다 (목록의 N+1 방지). */
+    private Map<UUID, LocalDateTime> pinnedAts(UUID userId) {
+        Map<UUID, LocalDateTime> pins = new HashMap<>();
+        for (MemoPin pin : memoPinRepository.findAllByUser_Id(userId)) {
+            pins.put(pin.getMemo().getId(), pin.getPinnedAt());
+        }
+        return pins;
     }
 
     /** 고정된 것 먼저(고정 시각 최신순), 나머지는 원래 순서 그대로(정렬이 안정적이다). */
-    private static Comparator<Memo> pinnedFirst(Viewer viewer) {
-        return Comparator.comparing((Memo memo) -> pinnedAtFor(memo, viewer),
+    private static Comparator<Memo> pinnedFirst(Map<UUID, LocalDateTime> pins) {
+        return Comparator.comparing((Memo memo) -> pinnedAtIn(memo, pins),
                 Comparator.nullsLast(Comparator.reverseOrder()));
     }
 
@@ -850,11 +903,16 @@ public class MemoService {
                 .build();
     }
 
-    /**
-     * @param viewer      응답을 받는 사용자 (isFavorite, sharedWith, permissions, 연결 목록은 이 사용자 기준)
-     * @param favoriteIds 미리 조회해 둔 viewer 의 즐겨찾기 메모 ID 목록. null 이면 이 메모에 대해 개별 조회합니다.
-     */
     private MemoResponse convertToResponse(Memo memo, Viewer viewer, Set<UUID> favoriteIds) {
+        return convertToResponse(memo, viewer, favoriteIds, null);
+    }
+
+    /**
+     * @param viewer      응답을 받는 사용자 (isFavorite, pinnedAt, sharedWith, permissions, 연결 목록은 이 사용자 기준)
+     * @param favoriteIds 미리 조회해 둔 viewer 의 즐겨찾기 메모 ID 목록. null 이면 이 메모에 대해 개별 조회합니다.
+     * @param pins        미리 조회해 둔 viewer 의 개인 고정(memoId → 시각). null 이면 이 메모에 대해 개별 조회합니다.
+     */
+    private MemoResponse convertToResponse(Memo memo, Viewer viewer, Set<UUID> favoriteIds, Map<UUID, LocalDateTime> pins) {
         UUID viewerId = viewer.id();
         List<String> tags = memoTagRepository.findAllByMemo(memo).stream()
                 .map(MemoTag::getName)
@@ -923,7 +981,7 @@ public class MemoService {
                 .createdAt(memo.getCreatedAt())
                 .updatedAt(memo.getUpdatedAt())
                 .version(memo.getVersion() != null ? memo.getVersion() : 0L)
-                .pinnedAt(pinnedAtFor(memo, viewer))
+                .pinnedAt(pinnedAtFor(memo, viewer, pins))
                 .permissions(permissionsOf(memo, viewer))
                 .build();
     }
