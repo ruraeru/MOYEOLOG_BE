@@ -13,6 +13,8 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.util.HtmlUtils;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.concurrent.ExecutorService;
@@ -97,7 +99,8 @@ public class AccountMailer {
     public void sendEmailVerify(String to, String token) {
         queue(to, "[모여로그] 새 이메일 주소를 확인해 주세요",
                 "모여로그 계정에 이 이메일 주소를 등록하려면 아래 링크를 열고 '인증하기' 버튼을 눌러 주세요. 링크는 30분 동안 쓸 수 있어요.",
-                link("/verify", token, "email"),
+                // 인증 화면이 어떤 주소로 바꾸는지 보여 주도록 주소도 붙인다(받는 사람 자신의 주소라 새로 드러나는 것 없음)
+                link("/verify", token, "email") + "&email=" + URLEncoder.encode(to, StandardCharsets.UTF_8),
                 "요청하지 않았다면 이 메일을 무시해 주세요. 계정의 이메일은 바뀌지 않아요.");
     }
 

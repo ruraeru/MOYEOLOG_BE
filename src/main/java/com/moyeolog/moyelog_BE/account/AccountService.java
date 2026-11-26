@@ -42,7 +42,8 @@ public class AccountService {
 
     static final String INVALID_TOKEN_MESSAGE = "인증 링크가 올바르지 않거나 만료됐어요. 다시 요청해 주세요.";
     static final String WRONG_PASSWORD_MESSAGE = "비밀번호가 올바르지 않아요.";
-    static final String WRONG_CURRENT_PASSWORD_MESSAGE = "현재 비밀번호가 올바르지 않아요.";
+    static final String SAME_PASSWORD_MESSAGE = "지금과 같은 비밀번호예요. 다른 비밀번호를 입력해 주세요.";
+    static final String WRONG_CURRENT_PASSWORD_MESSAGE = "지금 비밀번호가 올바르지 않아요.";
     static final String KAKAO_RELOGIN_MESSAGE = "보안을 위해 카카오로 다시 로그인한 뒤 10분 안에 다시 시도해 주세요.";
     private static final int KAKAO_RELOGIN_MINUTES = 10;
     static final String EMAIL_LOGIN_REQUIRED_MESSAGE = "이메일을 등록한 계정으로 로그인한 뒤 다시 눌러 주세요.";
@@ -210,6 +211,10 @@ public class AccountService {
         if (changing) {
             if (!passwordMatches(currentPassword, user.getPasswordHash())) {
                 throw new BadRequestException(WRONG_CURRENT_PASSWORD_MESSAGE);
+            }
+            // 바뀌는 것 없이 모든 기기만 로그아웃되지 않게
+            if (passwordMatches(newPassword, user.getPasswordHash())) {
+                throw new BadRequestException(SAME_PASSWORD_MESSAGE);
             }
         } else if (user.getEmailVerifiedAt() == null) {
             throw new BadRequestException("이메일을 먼저 인증해 주세요.");

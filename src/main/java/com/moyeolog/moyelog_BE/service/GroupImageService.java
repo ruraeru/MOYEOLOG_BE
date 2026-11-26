@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class GroupImageService {
 
-    static final String INVALID_IMAGE_MESSAGE = "JPEG, PNG, GIF, WEBP 이미지만 올릴 수 있어요.";
+    static final String INVALID_IMAGE_MESSAGE = "JPG, PNG, GIF, WEBP 이미지만 올릴 수 있어요.";
 
     private static final Pattern DATA_URL = Pattern.compile("^data:image/(png|jpeg|jpg|gif|webp);base64,", Pattern.CASE_INSENSITIVE);
 

@@ -84,7 +84,7 @@ public class FileService {
         try (InputStream in = file.getInputStream()) {
             byte[] header = in.readNBytes(HEADER_LENGTH);
             ImageType type = detectImageType(header)
-                    .orElseThrow(() -> new BadRequestException("JPEG, PNG, GIF, WEBP 이미지만 올릴 수 있어요."));
+                    .orElseThrow(() -> new BadRequestException("JPG, PNG, GIF, WEBP 이미지만 올릴 수 있어요."));
 
             Path root = uploadRoot();
             Files.createDirectories(root);
@@ -229,7 +229,7 @@ public class FileService {
      */
     public String storeImage(byte[] content) {
         ImageType type = detectImageType(content)
-                .orElseThrow(() -> new BadRequestException("JPEG, PNG, GIF, WEBP 이미지만 업로드할 수 있어요."));
+                .orElseThrow(() -> new BadRequestException("JPG, PNG, GIF, WEBP 이미지만 업로드할 수 있어요."));
         try {
             Path root = uploadRoot();
             Files.createDirectories(root);
