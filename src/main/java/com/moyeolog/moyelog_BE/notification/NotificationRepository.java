@@ -41,4 +41,11 @@ public interface NotificationRepository extends JpaRepository<Notification, UUID
     int deleteByRecipientAndTypeAndLink(@Param("recipientId") UUID recipientId,
                                         @Param("type") NotificationType type,
                                         @Param("link") String link);
+
+    @Query("SELECT DISTINCT n.recipient.id FROM Notification n WHERE n.link = :link")
+    List<UUID> findRecipientIdsByLink(@Param("link") String link);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("DELETE FROM Notification n WHERE n.link = :link")
+    int deleteByLink(@Param("link") String link);
 }

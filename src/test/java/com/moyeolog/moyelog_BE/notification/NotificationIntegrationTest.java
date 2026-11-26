@@ -198,6 +198,21 @@ class NotificationIntegrationTest {
         assertThat(texts(list(a), "message")).containsExactly("대기 초대");
     }
 
+    @Test
+    @DisplayName("지운 대상 링크로 지우기: 모든 받는 사람에게서 그 링크 알림만 지운다")
+    void retractAllByLink() throws Exception {
+        Session a = login(mockMvc, "받은이1");
+        Session b = login(mockMvc, "받은이2");
+        publishInTx(a.userId(), null, NotificationType.MEMO_SHARED, "지운 메모", "/memo/m1");
+        publishInTx(b.userId(), null, NotificationType.MEMO_SHARED, "지운 메모", "/memo/m1");
+        publishInTx(a.userId(), null, NotificationType.MEMO_SHARED, "남은 메모", "/memo/m2");
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(NotificationRetractEvent.ofLink("/memo/m1")));
+
+        assertThat(texts(list(a), "message")).containsExactly("남은 메모");
+        assertThat(texts(list(b), "message")).isEmpty();
+    }
+
     private String pendingRequestId(Session receiver) throws Exception {
         JsonNode requests = json(mockMvc.perform(auth(get("/api/friends/requests"), receiver))
                 .andExpect(status().isOk()).andReturn());

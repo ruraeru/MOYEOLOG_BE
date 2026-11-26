@@ -138,7 +138,16 @@ public class NotificationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int retract(NotificationRetractEvent event) {
-        if (event == null || event.recipientId() == null || event.type() == null) return 0;
+        if (event == null) return 0;
+        if (event.recipientId() == null) {
+            if (event.link() == null) return 0;
+            List<UUID> recipients = notificationRepository.findRecipientIdsByLink(event.link());
+            if (recipients.isEmpty()) return 0;
+            int deleted = notificationRepository.deleteByLink(event.link());
+            recipients.forEach(this::publishChange);
+            return deleted;
+        }
+        if (event.type() == null) return 0;
         int deleted;
         if (event.link() != null) {
             deleted = notificationRepository.deleteByRecipientAndTypeAndLink(event.recipientId(), event.type(), event.link());
