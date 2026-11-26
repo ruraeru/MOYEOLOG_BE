@@ -53,6 +53,7 @@ public class MessageService {
             User other = f.getRequester().getId().equals(userId) ? f.getReceiver() : f.getRequester();
             partners.put(other.getId(), other);
         }
+        Set<UUID> friendIds = new HashSet<>(partners.keySet());
         Set<UUID> messaged = new HashSet<>(messageRepository.findRecipientIdsOf(userId));
         messaged.addAll(messageRepository.findSenderIdsTo(userId));
         messaged.removeAll(partners.keySet());
@@ -71,7 +72,8 @@ public class MessageService {
             Message last = messageRepository.findBetween(userId, partner.getId(), PageRequest.of(0, 1))
                     .stream().findFirst().orElse(null);
             result.add(new ConversationResponse(ConversationResponse.Friend.from(partner),
-                    ConversationResponse.LastMessage.from(last), unread.getOrDefault(partner.getId(), 0L)));
+                    ConversationResponse.LastMessage.from(last), unread.getOrDefault(partner.getId(), 0L),
+                    friendIds.contains(partner.getId())));
         }
 
         // 최근 메시지 순, 메시지가 없는 친구는 뒤에 닉네임 순
@@ -136,6 +138,8 @@ public class MessageService {
         messageRepository.hideSent(userId, friendId);
         messageRepository.hideReceived(userId, friendId, LocalDateTime.now());
         messageRepository.deleteHiddenByBoth(userId, friendId);
+        // 내 다른 탭·기기의 목록과 열린 대화도 비운다(상대 쪽은 바뀌지 않으므로 나에게만)
+        eventPublisher.publishEvent(ChangeEvent.of(List.of(userId), LiveTopics.MESSAGES));
     }
 
     /** 헤더 배지용. 알림 설정에서 메시지를 끄면 0 (메시지 자체는 그대로). */

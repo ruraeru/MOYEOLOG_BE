@@ -488,7 +488,7 @@ class AuthPasswordLinkIntegrationTest {
         for (String bad : new String[]{null, "", "wrong-password", "가".repeat(25)}) {
             unlink(s, bad)
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message").value("현재 비밀번호가 올바르지 않아요."));
+                    .andExpect(jsonPath("$.message").value("지금 비밀번호가 올바르지 않아요."));
         }
         assertThat(me(s.accessToken()).path("kakaoLinked").asBoolean()).isTrue();
         unlink(s, "right-password")

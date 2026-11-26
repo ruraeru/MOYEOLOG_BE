@@ -104,6 +104,8 @@ class MemoServiceTest {
         verify(memoFavoriteRepository).deleteAllByMemo(withImage);
         verify(memoPinRepository).deleteAllByMemoId(memoId);
         verify(fileService).deleteFileAfterCommit("/uploads/a.png");
+        // 지운 메모를 가리키던 알림도 정리
+        verify(eventPublisher).publishEvent(com.moyeolog.moyelog_BE.event.NotificationRetractEvent.ofLink("/memo/" + memoId));
     }
 
     @Test
@@ -496,7 +498,7 @@ class MemoServiceTest {
     }
 
     @Test
-    @DisplayName("공유: 이미 공유한 친구는 다시 저장하지 않고 권한만 바꾸며, 새로 공유받은 친구에게만 MEMO_SHARED 알림")
+    @DisplayName("공유: 이미 공유한 친구는 다시 저장하지 않고 권한만 바꾸며, 새로 공유받은 친구에게 공유 알림, 권한이 바뀐 친구에게 권한 변경 알림")
     void shareMemo_DedupAndNotify() {
         User f1 = User.builder().id(UUID.randomUUID()).nickname("f1").build();
         User f2 = User.builder().id(UUID.randomUUID()).nickname("f2").build();
@@ -520,10 +522,17 @@ class MemoServiceTest {
         assertThat(existing.isCanEdit()).isTrue();
         org.mockito.ArgumentCaptor<com.moyeolog.moyelog_BE.event.NotificationEvent> captor =
                 org.mockito.ArgumentCaptor.forClass(com.moyeolog.moyelog_BE.event.NotificationEvent.class);
-        verify(eventPublisher).publishEvent(captor.capture());
-        assertThat(captor.getValue().recipientId()).isEqualTo(f2.getId());
-        assertThat(captor.getValue().type()).isEqualTo(com.moyeolog.moyelog_BE.event.NotificationType.MEMO_SHARED);
-        assertThat(captor.getValue().link()).isEqualTo("/memo/" + memoId);
+        // 새로 공유받은 f2 에게 공유 알림, 권한이 '읽기만'에서 '수정 가능'으로 바뀐 f1 에게 권한 변경 알림(q09)
+        verify(eventPublisher, org.mockito.Mockito.times(2)).publishEvent(captor.capture());
+        List<com.moyeolog.moyelog_BE.event.NotificationEvent> events = captor.getAllValues();
+        assertThat(events).extracting(com.moyeolog.moyelog_BE.event.NotificationEvent::recipientId)
+                .containsExactly(f2.getId(), f1.getId());
+        assertThat(events).allSatisfy(e -> {
+            assertThat(e.type()).isEqualTo(com.moyeolog.moyelog_BE.event.NotificationType.MEMO_SHARED);
+            assertThat(e.link()).isEqualTo("/memo/" + memoId);
+        });
+        assertThat(events.get(0).message()).endsWith("수정할 수 있게 공유했어요.");
+        assertThat(events.get(1).message()).endsWith("수정할 수 있게 바꿨어요.");
     }
 
     @Test

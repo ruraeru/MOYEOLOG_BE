@@ -25,6 +25,9 @@ public interface FriendRepository extends JpaRepository<Friend, UUID> {
     // 내가 받은 요청 목록
     List<Friend> findByReceiverAndStatus(User receiver, FriendStatus status);
 
+    // 내가 받은 요청 목록 (최근 요청 먼저)
+    List<Friend> findByReceiverAndStatusOrderByCreatedAtDesc(User receiver, FriendStatus status);
+
     // 내가 보낸 요청 목록
     List<Friend> findByRequesterAndStatusOrderByCreatedAtDesc(User requester, FriendStatus status);
 

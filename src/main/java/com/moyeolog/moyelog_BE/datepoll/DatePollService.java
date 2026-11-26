@@ -104,7 +104,7 @@ public class DatePollService {
                 .build());
 
         List<User> members = members(groupId);
-        notify(members, userId, groupId, nickname(members, userId) + "님이 '" + shortTitle(poll)
+        notify(members, userId, groupId, poll.getId(), nickname(members, userId) + "님이 '" + shortTitle(poll)
                 + "' 날짜 조율을 시작했어요. 가능한 날을 골라 주세요.");
         publishChange(groupId, members);
         return detail(poll, members, userId);
@@ -165,7 +165,7 @@ public class DatePollService {
         List<User> members = members(groupId);
         Tally tally = tally(poll, members);
         List<User> waiting = members.stream().filter(u -> !tally.responded().containsKey(u.getId())).toList();
-        notify(waiting, userId, groupId, nickname(members, userId) + "님이 '" + shortTitle(poll)
+        notify(waiting, userId, groupId, poll.getId(), nickname(members, userId) + "님이 '" + shortTitle(poll)
                 + "' 날짜 조율에 응답을 기다리고 있어요. 가능한 날을 골라 주세요.");
     }
 
@@ -200,7 +200,7 @@ public class DatePollService {
         pollRepository.flush();
 
         // 일정 참여자는 일정 생성 경로의 '참여자로 추가' 알림을 이미 받으므로 확정 알림에서 뺀다.
-        notify(members.stream().filter(u -> !participants.contains(u.getId())).toList(), userId, groupId,
+        notify(members.stream().filter(u -> !participants.contains(u.getId())).toList(), userId, groupId, poll.getId(),
                 nickname(members, userId) + "님이 '" + shortTitle(poll)
                         + "' 날짜를 " + label(request.date()) + "로 정했어요.");
         publishChange(groupId, members);
@@ -244,8 +244,9 @@ public class DatePollService {
     // ─── AI ─────────────────────────────────────────────────────────
 
     /** 읽기 트랜잭션에서 꺼낸 추천 입력. 엔티티가 아니라 값이다. */
+    /** names: 멤버 닉네임(LLM 이 이름 속에 넣은 공백을 되돌릴 때 쓴다) */
     record AiInput(String prompt, String sourceHash, List<LocalDate> best, Map<LocalDate, Integer> counts,
-                   int memberCount, int respondedCount) {
+                   int memberCount, int respondedCount, List<String> names) {
     }
 
     private AiInput prepareRecommendation(UUID userId, UUID groupId, UUID pollId) {
@@ -279,15 +280,19 @@ public class DatePollService {
                 + "Candidate dates (date (weekday): available count - names):\n" + data
                 + "Rules:\n"
                 + "1. summary: 2 to 4 complete sentences IN KOREAN (polite 해요체) describing the availability, "
-                + "mentioning who has not responded if relevant.\n"
+                + "mentioning who has not responded if relevant. End EVERY sentence with ~요 (e.g. 가능해요, 않았어요); "
+                + "never use ~습니다 or ~네요.\n"
                 + "2. recommended: 1 to 3 dates, best first. Each item has date (MUST be one of the candidate dates above, "
-                + "format yyyy-MM-dd) and reason (one short sentence IN KOREAN). Prefer dates where more members are available. "
+                + "format yyyy-MM-dd) and reason (one short sentence IN KOREAN, polite 해요체 like the summary: end with ~요, "
+                + "e.g. 가장 많이 가능해요; never ~습니다). Prefer dates where more members are available. "
                 + "NEVER recommend a date whose available count is 0.\n"
                 + "3. Write summary and reasons ONLY in Korean Hangul. Do not use Chinese characters (Hanja), Japanese or English words. "
-                + "State counts exactly as given above.\n"
+                + "State counts exactly as given above. Write member names exactly as given and attach particles directly "
+                + "(e.g. 민지는, not 민지 는). Write dates like 11월 29일 (no space between a number and 월/일/명).\n"
                 + "Return the result STRICTLY as a JSON object: "
                 + "{\"summary\": string, \"recommended\": [{\"date\": string, \"reason\": string}]}.";
-        return new AiInput(prompt, tally.hash(), best(dates), counts, members.size(), tally.responded().size());
+        return new AiInput(prompt, tally.hash(), best(dates), counts, members.size(), tally.responded().size(),
+                members.stream().map(User::getNickname).toList());
     }
 
     private DatePollDetail saveRecommendation(UUID userId, UUID groupId, UUID pollId, AiInput input,
@@ -304,7 +309,7 @@ public class DatePollService {
                 LocalDate date = parseDate(map.get("date"));
                 // 후보 밖 날짜와 가능한 사람이 0명인 날은 버린다(LLM 이 실제로 0명인 날을 추천한 적이 있다).
                 if (date == null || input.counts().getOrDefault(date, 0) == 0 || !seen.add(date)) continue;
-                String reason = clip(text(map.get("reason")), 200);
+                String reason = clip(tidy(text(map.get("reason")), input.names()), 200);
                 recommended.add(new Recommendation(date,
                         usable(reason) ? reason : fallbackReason(input, date)));
             }
@@ -312,7 +317,7 @@ public class DatePollService {
         if (recommended.isEmpty()) {
             input.best().forEach(d -> recommended.add(new Recommendation(d, fallbackReason(input, d))));
         }
-        String summary = clip(text(result.get("summary")), 600);
+        String summary = clip(tidy(text(result.get("summary")), input.names()), 600);
         if (!usable(summary)) {
             summary = input.memberCount() + "명 중 " + input.respondedCount() + "명이 응답했어요.";
         }
@@ -332,8 +337,93 @@ public class DatePollService {
         return !text.isEmpty() && !CJK_NOT_KOREAN.matcher(text).find();
     }
 
+    /** 다른 이유(LLM 문장)와 형식을 맞춰 한 문장으로 쓴다 */
     private static String fallbackReason(AiInput input, LocalDate date) {
-        return input.memberCount() + "명 중 " + input.counts().getOrDefault(date, 0) + "명 가능";
+        return input.memberCount() + "명 중 " + input.counts().getOrDefault(date, 0) + "명이 가능해요.";
+    }
+
+    /** 숫자와 단위 사이('11 월', '2 명')의 공백 */
+    private static final java.util.regex.Pattern NUMBER_UNIT_SPACE = java.util.regex.Pattern.compile("(\\d) +(월|일|명|시|분)");
+    /** 영문·숫자로 끝나는 이름과 조사 사이('큐에이20b 는')의 공백 */
+    private static final java.util.regex.Pattern NAME_PARTICLE_SPACE =
+            java.util.regex.Pattern.compile("([0-9A-Za-z]) +(은|는|이|가|을|를|와|과|도|의|에게|만)(?=[\\s.,!?]|$)");
+
+    /** LLM(qwen)이 한국어를 토큰 단위로 띄어 쓰는 것('11 월 29 일', '20b 는')을 붙인다 */
+    static String tidy(String text) {
+        return tidy(text, List.of());
+    }
+
+    /**
+     * tidy + 멤버 닉네임 속에 끼어든 공백('큐에이 20a', '큐 에이20a')을 원래 닉네임으로 되돌린다.
+     * 이름을 먼저 붙여야 뒤의 이름·조사 규칙이 '큐에이20a 가' 를 '큐에이20a가' 로 붙인다.
+     * 공백 없는 글자 3개 이상인 닉네임만 고친다(짧은 이름은 '가 나' 처럼 평범한 두 낱말과 헷갈릴 수 있어서).
+     * 줄여 부른 이름('20c')이나 틀리게 쓴 이름은 되돌리지 못한다.
+     */
+    static String tidy(String text, List<String> names) {
+        String result = text;
+        List<String> sorted = names == null ? List.of() : names.stream()
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .sorted(java.util.Comparator.comparingInt(String::length).reversed())
+                .toList();
+        for (String name : sorted) {
+            int[] letters = name.codePoints().filter(c -> !Character.isWhitespace(c)).toArray();
+            if (letters.length < 3) continue;
+            StringBuilder regex = new StringBuilder();
+            for (int i = 0; i < letters.length; i++) {
+                if (i > 0) regex.append("\\s*");
+                regex.append(java.util.regex.Pattern.quote(new String(Character.toChars(letters[i]))));
+            }
+            result = java.util.regex.Pattern.compile(regex.toString()).matcher(result)
+                    .replaceAll(java.util.regex.Matcher.quoteReplacement(name));
+        }
+        result = NUMBER_UNIT_SPACE.matcher(result).replaceAll("$1$2");
+        result = NAME_PARTICLE_SPACE.matcher(result).replaceAll("$1$2");
+        return toHaeyo(result);
+    }
+
+    /** 문장 끝(뒤에 . ! ? 하나까지, 그다음 공백·끝) */
+    private static final String SENTENCE_END = "(?=[.!?]?(?:\\s|$))";
+    /** 받침 ㅆ 인 글자(있·었·았·였·했·됐·겠 …) + 습니다 → 어요 */
+    private static final java.util.regex.Pattern SSEUMNIDA = java.util.regex.Pattern.compile("(\\S)습니다" + SENTENCE_END);
+    /** 어간 + 습니다 → 어간 + 아요/어요 가 규칙대로인 낱말만(불규칙 '가깝습니다' 같은 것은 건드리지 않는다) */
+    private static final java.util.regex.Pattern REGULAR_SEUMNIDA =
+            java.util.regex.Pattern.compile("(좋|많|않|높|낮|같|없|적|늦)습니다" + SENTENCE_END);
+    private static final java.util.regex.Pattern HAMNIDA = java.util.regex.Pattern.compile("합니다" + SENTENCE_END);
+    private static final java.util.regex.Pattern DOEMNIDA = java.util.regex.Pattern.compile("됩니다" + SENTENCE_END);
+    /** 한글 + 입니다 → 받침 있으면 이에요, 없으면 예요 */
+    private static final java.util.regex.Pattern IMNIDA = java.util.regex.Pattern.compile("([가-힣])입니다" + SENTENCE_END);
+
+    /**
+     * LLM 이 프롬프트를 어기고 쓴 문장 끝 '~습니다/합니다/됩니다/입니다' 중 기계적으로 바꿔도 뜻이 같은 꼴만 해요체로 바꾼다.
+     * 받침 ㅆ + 습니다(있습니다·했습니다·겠습니다), 규칙 활용 어간 몇 개(좋·많·않·높·낮·같·없·적·늦), 합니다→해요, 됩니다→돼요,
+     * 한글 + 입니다(받침에 따라 이에요/예요). 그 밖의 ~ㅂ니다(갑니다·가깝습니다 등)는 활용이 불규칙할 수 있어 그대로 둔다.
+     */
+    static String toHaeyo(String text) {
+        String result = SSEUMNIDA.matcher(text).replaceAll(m -> {
+            String last = m.group(1);
+            return finalConsonant(last) == 20 ? java.util.regex.Matcher.quoteReplacement(last + "어요") : java.util.regex.Matcher.quoteReplacement(m.group());
+        });
+        result = REGULAR_SEUMNIDA.matcher(result).replaceAll(m -> {
+            String stem = m.group(1);
+            char lastChar = stem.charAt(0);
+            // 마지막 모음이 ㅏ·ㅗ 면 아요(좋아요·많아요·않아요·높아요·낮아요·같아요), 아니면 어요(없어요·적어요·늦어요)
+            int vowel = ((lastChar - 0xAC00) / 28) % 21;
+            String ending = (vowel == 0 || vowel == 8) ? "아요" : "어요";
+            return java.util.regex.Matcher.quoteReplacement(stem + ending);
+        });
+        result = HAMNIDA.matcher(result).replaceAll("해요");
+        result = DOEMNIDA.matcher(result).replaceAll("돼요");
+        return IMNIDA.matcher(result).replaceAll(m -> {
+            String last = m.group(1);
+            return java.util.regex.Matcher.quoteReplacement(last + (finalConsonant(last) == 0 ? "예요" : "이에요"));
+        });
+    }
+
+    /** 한글 음절의 받침 번호(0 = 없음, 20 = ㅆ). 한글 음절이 아니면 -1 */
+    private static int finalConsonant(String syllable) {
+        char c = syllable.charAt(0);
+        return c >= 0xAC00 && c <= 0xD7A3 ? (c - 0xAC00) % 28 : -1;
     }
 
     private String writeRecommendations(List<Recommendation> recommended) {
@@ -496,9 +586,9 @@ public class DatePollService {
         return new ArrayList<>(members.values());
     }
 
-    /** 알림은 새 종류 없이 '일정 참여' 설정을 쓴다(중간 지점과 같다). 누르면 그 모임의 일정 탭. */
-    private void notify(List<User> recipients, UUID actorId, UUID groupId, String message) {
-        String link = "/groups/" + groupId + "?tab=calendar";
+    /** 알림은 새 종류 없이 '일정 참여' 설정을 쓴다(중간 지점과 같다). 누르면 그 모임의 일정 탭에서 그 조율 창이 열린다. */
+    private void notify(List<User> recipients, UUID actorId, UUID groupId, UUID pollId, String message) {
+        String link = "/groups/" + groupId + "?tab=calendar&poll=" + pollId;
         for (User recipient : recipients) {
             if (recipient.getId().equals(actorId)) continue;
             eventPublisher.publishEvent(new NotificationEvent(recipient.getId(), actorId,

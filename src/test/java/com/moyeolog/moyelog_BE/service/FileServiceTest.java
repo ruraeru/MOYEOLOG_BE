@@ -69,7 +69,7 @@ class FileServiceTest {
 
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.png", "image/png", html)))
                 .isInstanceOf(BadRequestException.class)
-                .hasMessage("JPEG, PNG, GIF, WEBP 이미지만 올릴 수 있어요.");
+                .hasMessage("JPG, PNG, GIF, WEBP 이미지만 올릴 수 있어요.");
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.svg", "image/svg+xml", svg)))
                 .isInstanceOf(BadRequestException.class);
         assertThatThrownBy(() -> fileService.storeFile(new MockMultipartFile("image", "a.webp", "image/webp", riffButNotWebp)))

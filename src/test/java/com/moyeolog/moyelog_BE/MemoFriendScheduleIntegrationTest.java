@@ -207,6 +207,43 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("친구 요청 409 문구는 경우마다 다르고, 친구 목록은 닉네임순, 요청 알림은 받은 요청 탭으로 간다")
+    void friends_conflictMessagesOrderAndLink() throws Exception {
+        Session a = login("나요청");
+        Session b = login("다받음");
+        Session c = login("가친구");
+
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isOk());
+        // 보낸 사람이 다시 보냄
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 친구 신청을 보냈어요. 상대가 수락하면 친구가 돼요."));
+        // 받은 사람이 거꾸로 보냄 → 받은 요청에서 수락하라고 안내
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), b), Map.of("customId", a.customId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 나에게 친구 신청을 보냈어요. 받은 요청에서 수락해 주세요."));
+
+        JsonNode notes = json(mockMvc.perform(auth(get("/api/notifications"), b)).andExpect(status().isOk()).andReturn());
+        boolean linked = false;
+        for (JsonNode n : notes) {
+            if ("FRIEND_REQUEST".equals(n.path("type").asText())) linked = "/friends?tab=received".equals(n.path("link").asText());
+        }
+        assertThat(linked).isTrue();
+
+        String requestId = json(mockMvc.perform(auth(get("/api/friends/requests"), b)).andReturn()).get(0).path("id").asText();
+        mockMvc.perform(auth(put("/api/friends/accept/" + requestId), b)).andExpect(status().isOk());
+        mockMvc.perform(jsonBody(auth(post("/api/friends/request"), a), Map.of("customId", b.customId())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 친구예요."));
+
+        makeFriends(c, a);
+        JsonNode friends = json(mockMvc.perform(auth(get("/api/friends"), a)).andExpect(status().isOk()).andReturn());
+        assertThat(friends.get(0).path("nickname").asText()).isEqualTo("가친구");
+        assertThat(friends.get(1).path("nickname").asText()).isEqualTo("다받음");
+    }
+
+    @Test
     @DisplayName("친구를 끊으면 개인 일정 참여자에서도 빠지고(모임 일정은 그대로), 공유로 생긴 즐겨찾기도 지워진다")
     void unfriend_removesPersonalParticipationAndFavorites() throws Exception {
         Session jiwoo = login("jiwoo");
@@ -336,6 +373,21 @@ class MemoFriendScheduleIntegrationTest {
                 .andExpect(jsonPath("$.permissions.delete").value(true));
         mockMvc.perform(auth(delete("/api/memos/" + memoId), writer)).andExpect(status().isNoContent());
         mockMvc.perform(auth(delete("/api/memos/" + memoId), writer)).andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("공유할 친구가 없으면 빈 배열이든 나만 넣었든 같은 400 문구")
+    void share_emptyAndSelfSameMessage() throws Exception {
+        Session author = login("semptya");
+        String memoId = createMemo(author, Map.of("title", "t", "content", "c")).path("id").asText();
+        String shareUrl = "/api/memos/" + memoId + "/share";
+        String msg = "공유할 친구를 한 명 이상 선택해 주세요.";
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(msg));
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of(author.userId()))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(msg));
     }
 
     @Test
@@ -481,6 +533,20 @@ class MemoFriendScheduleIntegrationTest {
         // 참여자가 남의 일정에 자기 메모를 붙이려 해도 연결되지 않는다
         createMemo(seoyeon, Map.of("title", "불참 사유", "content", "c", "taggedScheduleIds", List.of(rehearsal)));
         assertThat(scheduleOf(jiwoo, rehearsal).path("taggedMemos").size()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("연결된 일정: 시작 시각을 주고 이른 일정부터 준다")
+    void links_scheduleSummaryHasStartTimeSorted() throws Exception {
+        Session jiwoo = login("ljiwoo");
+        String later = createSchedule(jiwoo, Map.of("title", "늦은 일정", "startTime", "2026-12-03T10:00:00", "endTime", "2026-12-03T11:00:00"));
+        String earlier = createSchedule(jiwoo, Map.of("title", "이른 일정", "startTime", "2026-12-02T09:30:00", "endTime", "2026-12-02T10:00:00"));
+        String memoId = createMemo(jiwoo, Map.of("title", "연결", "content", "c",
+                "taggedScheduleIds", List.of(later, earlier))).path("id").asText();
+        mockMvc.perform(auth(get("/api/memos/" + memoId), jiwoo))
+                .andExpect(jsonPath("$.taggedSchedules[0].id").value(earlier))
+                .andExpect(jsonPath("$.taggedSchedules[0].startTime").value("2026-12-02T09:30:00"))
+                .andExpect(jsonPath("$.taggedSchedules[1].id").value(later));
     }
 
     // ─── 일정 ───────────────────────────────────────────────────────

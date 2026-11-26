@@ -159,6 +159,8 @@ public class GroupTopicService {
         GroupTopic topic = groupTopicRepository.findByIdForUpdate(topicId)
                 .orElseThrow(() -> GroupErrors.notFound(TOPIC_NOT_FOUND));
         if (!canPin(topic, userId)) {
+            // 모임 밖 사람에게는 다른 동작과 같은 '멤버가 아니에요' 를 먼저 알린다
+            validateMember(topic.getGroup(), userId);
             throw new UnauthorizedAccessException("방장이나 작성자만 지울 수 있어요.");
         }
         String imageUrl = topic.getImageUrl();
@@ -186,11 +188,40 @@ public class GroupTopicService {
         UUID topicAuthorId = topic.getAuthor().getId();
         if (!topicAuthorId.equals(userId)) {
             eventPublisher.publishEvent(new NotificationEvent(topicAuthorId, userId, NotificationType.TOPIC_COMMENT,
-                    author.getNickname() + "님이 \"" + CodePointSizeValidator.truncate(topic.getTitle(), 30)
-                            + "\" 토픽에 댓글을 남겼어요.",
+                    author.getNickname() + "님이 '" + shortTitle(topic.getTitle()) + "' 토픽에 댓글을 남겼어요.",
                     "/groups/" + topic.getGroup().getId() + "?topic=" + topic.getId()));
         }
+        notifyMentions(topic, author, request.getContent());
         return convertToCommentResponse(saved);
+    }
+
+    /** 댓글 속 멘션 링크 '[@이름](/profile/{id})' */
+    private static final java.util.regex.Pattern MENTION_LINK = java.util.regex.Pattern.compile(
+            "\\]\\(/profile/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)");
+
+    /**
+     * 댓글에서 멘션한 모임 멤버에게 알린다(새 댓글일 때만). 새 알림 종류를 만들지 않고 TOPIC_COMMENT('토픽 댓글' 설정)를 쓴다.
+     * 쓴 사람 자신과, 이미 댓글 알림을 받는 토픽 작성자는 뺀다. 멤버가 아닌 id 는 무시한다.
+     */
+    private void notifyMentions(GroupTopic topic, User author, String content) {
+        if (content == null) return;
+        java.util.Set<UUID> targets = new java.util.LinkedHashSet<>();
+        java.util.regex.Matcher m = MENTION_LINK.matcher(content);
+        while (m.find()) {
+            targets.add(UUID.fromString(m.group(1)));
+        }
+        targets.remove(author.getId());
+        targets.remove(topic.getAuthor().getId());
+        if (targets.isEmpty()) return;
+        UUID groupId = topic.getGroup().getId();
+        String message = author.getNickname() + "님이 '" + shortTitle(topic.getTitle()) + "' 토픽 댓글에서 회원님을 언급했어요.";
+        String link = "/groups/" + groupId + "?topic=" + topic.getId();
+        for (UUID target : targets) {
+            if (groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, target)) {
+                eventPublisher.publishEvent(new NotificationEvent(target, author.getId(), NotificationType.TOPIC_COMMENT,
+                        message, link));
+            }
+        }
     }
 
     /** 수정은 작성자이면서 지금 모임 멤버일 때만 */
@@ -248,7 +279,7 @@ public class GroupTopicService {
                     GroupTopic topic = findTopicById(topicId);
                     validateMember(topic.getGroup(), userId);
                     log.info("[AI Analyze] Triggered for GroupTopic: {}", topicId);
-                    return new AiAnalysisSupport.Source(topicId.toString(), topic.getContent(), topic.getImageUrl());
+                    return new AiAnalysisSupport.Source(topicId.toString(), analysisText(topic), topic.getImageUrl());
                 },
                 analyzed -> {
                     // 분석하는 동안 토픽이 지워졌으면 404
@@ -268,6 +299,26 @@ public class GroupTopicService {
                                     .build());
                     return convertToInsightResponse(groupTopicInsightRepository.save(insight));
                 });
+    }
+
+    /** 분석에 넣는 글자 수 상한(댓글이 아주 많을 때 앞쪽 댓글부터 넣고 자른다) */
+    private static final int ANALYSIS_TEXT_LIMIT = 30_000;
+
+    /**
+     * '댓글 요약' 에 넣을 글: 본문 뒤에 댓글을 '이름: 내용' 으로 붙인다(댓글이 없으면 본문만).
+     * 지문(stale 판단)도 이 글로 계산하므로 댓글이 늘거나 바뀌면 다시 분석할 수 있다.
+     */
+    private String analysisText(GroupTopic topic) {
+        List<GroupTopicComment> comments = groupTopicCommentRepository.findAllByTopicOrderByCreatedAtAsc(topic);
+        String content = topic.getContent() != null ? topic.getContent() : "";
+        if (comments.isEmpty()) return content;
+        StringBuilder sb = new StringBuilder(content).append("\n\n[댓글]\n");
+        for (GroupTopicComment c : comments) {
+            String line = c.getAuthor().getNickname() + ": " + c.getContent() + "\n";
+            if (sb.length() + line.length() > ANALYSIS_TEXT_LIMIT) break;
+            sb.append(line);
+        }
+        return sb.toString();
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────
@@ -453,7 +504,13 @@ public class GroupTopicService {
                 .keywords(insight.getKeywords() != null ? insight.getKeywords() : List.of())
                 .analyzedAt(insight.getAnalyzedAt())
                 .stale(insight.getTopic() != null && AiAnalysisSupport.isStale(insight.getSourceHash(), insight.getAnalyzedAt(),
-                        insight.getTopic().getContent(), insight.getTopic().getImageUrl(), insight.getTopic().getUpdatedAt()))
+                        analysisText(insight.getTopic()), insight.getTopic().getImageUrl(), insight.getTopic().getUpdatedAt()))
                 .build();
+    }
+
+    /** 알림 문구용 제목: 30자가 넘으면 자르고 말줄임표를 붙인다 */
+    static String shortTitle(String title) {
+        String t = title == null ? "" : title.strip();
+        return CodePointSizeValidator.length(t) > 30 ? CodePointSizeValidator.truncate(t, 30).strip() + "…" : t;
     }
 }

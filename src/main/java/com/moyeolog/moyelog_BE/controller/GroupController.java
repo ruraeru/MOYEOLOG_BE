@@ -98,12 +98,11 @@ public class GroupController {
     }
 
     @PostMapping("/{id}/invitations")
-    public ResponseEntity<Void> inviteMembers(
+    public ResponseEntity<GroupInviteResponse> inviteMembers(
             @AuthenticationPrincipal String userId,
             @PathVariable UUID id,
             @RequestBody GroupInviteRequest request) {
-        groupService.inviteMembers(UUID.fromString(userId), id, request);
-        return ResponseEntity.ok().build();
+        return ResponseEntity.ok(groupService.inviteMembers(UUID.fromString(userId), id, request));
     }
 
     @GetMapping("/invitations")

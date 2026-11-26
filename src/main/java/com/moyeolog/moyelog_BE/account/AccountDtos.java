@@ -23,6 +23,9 @@ public final class AccountDtos {
     public record EmailChangeRequest(String email, String currentPassword) {
     }
 
+    public record TokenRequest(String token) {
+    }
+
     public record PasswordResetConfirmRequest(String token, String newPassword) {
     }
 

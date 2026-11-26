@@ -80,5 +80,6 @@ public class MemoResponse {
     public static class ScheduleSummaryResponse {
         private UUID id;
         private String title;
+        private LocalDateTime startTime; // 오프셋 없는 한국 시간. 연결된 일정 목록에서 날짜를 보여 주고 정렬한다
     }
 }

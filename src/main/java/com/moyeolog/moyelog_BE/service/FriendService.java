@@ -29,7 +29,10 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.text.Collator;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -65,8 +68,17 @@ public class FriendService {
             throw new BadRequestException("자기 자신에게는 친구 요청을 보낼 수 없어요.");
         }
 
-        if (!friendRepository.findAnyRelationship(requester, receiver).isEmpty()) {
-            throw new ConflictException(ALREADY_RELATED);
+        List<Friend> existing = friendRepository.findAnyRelationship(requester, receiver);
+        if (!existing.isEmpty()) {
+            Friend f = existing.get(0);
+            if (f.getStatus() == FriendStatus.ACCEPTED) {
+                throw new ConflictException("이미 친구예요.");
+            }
+            if (f.getRequester().getId().equals(receiver.getId())) {
+                // 상대가 먼저 보낸 요청이 있다: 새로 보내지 말고 받은 요청에서 수락하면 된다.
+                throw new ConflictException("이미 나에게 친구 신청을 보냈어요. 받은 요청에서 수락해 주세요.");
+            }
+            throw new ConflictException("이미 친구 신청을 보냈어요. 상대가 수락하면 친구가 돼요.");
         }
 
         Friend friend = Friend.builder()
@@ -81,18 +93,22 @@ public class FriendService {
         eventPublisher.publishEvent(ChangeEvent.of(List.of(requester.getId(), receiver.getId()), LiveTopics.FRIENDS));
 
         eventPublisher.publishEvent(new NotificationEvent(receiver.getId(), requester.getId(),
-                NotificationType.FRIEND_REQUEST, requester.getNickname() + "님이 친구 요청을 보냈어요.", "/friends"));
+                NotificationType.FRIEND_REQUEST, requester.getNickname() + "님이 친구 요청을 보냈어요.", "/friends?tab=received"));
     }
 
     @Transactional(readOnly = true)
     public List<FriendResponse> getAcceptedFriends(UUID userId) {
         User user = findUserById(userId);
 
+        // 순서를 정해 둔다: 닉네임 가나다순(한국어 정렬), 같으면 아이디순
+        Collator collator = Collator.getInstance(Locale.KOREAN);
         return friendRepository.findAcceptedFriends(user).stream()
                 .map(f -> {
                     User other = f.getRequester().getId().equals(userId) ? f.getReceiver() : f.getRequester();
                     return convertToResponse(f, other, true);
                 })
+                .sorted(Comparator.comparing(FriendResponse::getNickname, Comparator.nullsLast(collator))
+                        .thenComparing(FriendResponse::getCustomId, Comparator.nullsLast(Comparator.naturalOrder())))
                 .collect(Collectors.toList());
     }
 
@@ -101,7 +117,7 @@ public class FriendService {
         User user = findUserById(userId);
 
         // 수락 전에는 요청자의 이메일을 노출하지 않는다 (필드는 유지, 값은 null).
-        return friendRepository.findByReceiverAndStatus(user, FriendStatus.PENDING).stream()
+        return friendRepository.findByReceiverAndStatusOrderByCreatedAtDesc(user, FriendStatus.PENDING).stream()
                 .map(f -> convertToResponse(f, f.getRequester(), false))
                 .collect(Collectors.toList());
     }

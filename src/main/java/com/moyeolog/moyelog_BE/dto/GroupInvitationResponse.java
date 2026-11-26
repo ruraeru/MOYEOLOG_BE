@@ -18,4 +18,8 @@ public class GroupInvitationResponse {
     private String inviterNickname;
     private InvitationStatus status;
     private LocalDateTime invitedAt;
+    /** 수락 전에 어떤 모임인지 볼 수 있게(초대 링크 미리보기와 같은 정보) */
+    private String groupDescription;
+    private int memberCount;
+    private String ownerNickname;
 }

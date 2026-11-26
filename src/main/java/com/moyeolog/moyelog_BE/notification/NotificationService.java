@@ -72,6 +72,14 @@ public class NotificationService {
         publishChange(userId);
     }
 
+    /** 읽은 알림 모두 지우기. 안 읽은 알림은 남긴다. */
+    @Transactional
+    public int deleteRead(UUID userId) {
+        int deleted = notificationRepository.deleteReadByRecipient(userId);
+        if (deleted > 0) publishChange(userId);
+        return deleted;
+    }
+
     /** 커밋 뒤 실시간 갱신: 받는 사람의 알림 목록·배지 */
     private void publishChange(UUID recipientId) {
         eventPublisher.publishEvent(ChangeEvent.of(java.util.List.of(recipientId), LiveTopics.NOTIFICATIONS));
@@ -138,8 +146,24 @@ public class NotificationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int retract(NotificationRetractEvent event) {
-        if (event == null || event.recipientId() == null || event.actorId() == null || event.type() == null) return 0;
-        int deleted = notificationRepository.deleteByRecipientAndActorAndType(event.recipientId(), event.actorId(), event.type());
+        if (event == null) return 0;
+        if (event.recipientId() == null) {
+            if (event.link() == null) return 0;
+            List<UUID> recipients = notificationRepository.findRecipientIdsByLink(event.link());
+            if (recipients.isEmpty()) return 0;
+            int deleted = notificationRepository.deleteByLink(event.link());
+            recipients.forEach(this::publishChange);
+            return deleted;
+        }
+        if (event.type() == null) return 0;
+        int deleted;
+        if (event.link() != null) {
+            deleted = notificationRepository.deleteByRecipientAndTypeAndLink(event.recipientId(), event.type(), event.link());
+        } else if (event.actorId() != null) {
+            deleted = notificationRepository.deleteByRecipientAndActorAndType(event.recipientId(), event.actorId(), event.type());
+        } else {
+            return 0;
+        }
         if (deleted > 0) publishChange(event.recipientId());
         return deleted;
     }

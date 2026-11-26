@@ -160,6 +160,28 @@ class MidpointIntegrationTest {
     }
 
     @Test
+    @DisplayName("출발지 요청은 같은 일정에 10분 안에 다시 보내면 409, 국외 좌표 출발지는 400")
+    void requestCooldown_andDomesticOnly() throws Exception {
+        Session owner = login("재촉방장"), member = login("재촉멤버");
+        String groupId = createGroup(owner);
+        joinGroup(member, groupId, owner);
+        String scheduleId = createSchedule(owner, Map.of("groupId", groupId));
+        long before = notificationCount(member);
+
+        mockMvc.perform(auth(post(base(scheduleId) + "/request"), owner)).andExpect(status().isOk());
+        mockMvc.perform(auth(post(base(scheduleId) + "/request"), owner)).andExpect(status().isConflict());
+        assertThat(notificationCount(member)).isEqualTo(before + 1);
+
+        assertThat(putDeparture(member, scheduleId, "도쿄역", 35.68, 139.76).getResponse().getStatus()).isEqualTo(400);
+        assertThat(putDeparture(member, scheduleId, "제주공항", 33.5070, 126.4930).getResponse().getStatus()).isEqualTo(200);
+        // 모두 적었으면 보낼 사람이 없으니 쿨다운과 관계없이 0명
+        putDeparture(owner, scheduleId, "합정역", 37.5495, 126.9139);
+        JsonNode none = json(mockMvc.perform(auth(post(base(scheduleId) + "/request"), owner))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(none.path("sent").asInt()).isZero();
+    }
+
+    @Test
     @DisplayName("출발지 요청·장소 확정은 일정을 만든 사람만, 알림은 나머지 사람에게")
     void requestAndConfirm_authorOnly() throws Exception {
         Session owner = login("방장"), member = login("멤버"), third = login("셋째");

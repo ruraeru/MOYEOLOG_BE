@@ -167,7 +167,8 @@ class DatePollIntegrationTest {
         String link = jdbcTemplate.queryForObject(
                 "SELECT link FROM notifications WHERE recipient_id = ? ORDER BY created_at DESC LIMIT 1",
                 String.class, UUID.fromString(owner.userId()));
-        assertThat(link).isEqualTo("/groups/" + groupId + "?tab=calendar");
+        // 알림을 누르면 그 조율 창이 바로 열린다
+        assertThat(link).isEqualTo("/groups/" + groupId + "?tab=calendar&poll=" + pollId);
         assertThat(count("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND message LIKE ?",
                 UUID.fromString(owner.userId()), "멤버님이 '송년회' 날짜 조율을 시작했어요%")).isEqualTo(1);
         JsonNode created = detail(member, groupId, pollId);
@@ -434,7 +435,7 @@ class DatePollIntegrationTest {
         JsonNode recs = fallback.path("ai").path("recommended");
         assertThat(recs.size()).isEqualTo(3);
         assertThat(recs.get(0).path("date").asText()).isEqualTo(d3.toString());
-        assertThat(recs.get(0).path("reason").asText()).isEqualTo("3명 중 2명 가능");
+        assertThat(recs.get(0).path("reason").asText()).isEqualTo("3명 중 2명이 가능해요.");
         assertThat(recs.get(1).path("date").asText()).isEqualTo(d1.toString());
         assertThat(fallback.path("ai").path("stale").asBoolean()).isFalse();
 
@@ -448,8 +449,8 @@ class DatePollIntegrationTest {
         JsonNode cjk = json(mockMvc.perform(auth(post(url), owner)).andExpect(status().isOk()).andReturn());
         assertThat(cjk.path("ai").path("summary").asText()).isEqualTo("3명 중 3명이 응답했어요.");
         JsonNode cjkRecs = cjk.path("ai").path("recommended");
-        assertThat(cjkRecs.get(0).path("reason").asText()).isEqualTo("3명 중 2명 가능");
-        assertThat(cjkRecs.get(1).path("reason").asText()).isEqualTo("3명 중 1명 가능");
+        assertThat(cjkRecs.get(0).path("reason").asText()).isEqualTo("3명 중 2명이 가능해요.");
+        assertThat(cjkRecs.get(1).path("reason").asText()).isEqualTo("3명 중 1명이 가능해요.");
         assertThat(cjkRecs.get(2).path("reason").asText()).isEqualTo("가님이 가능해요.");
 
         // LLM 실패 → 502, 지난 추천과 집계는 그대로

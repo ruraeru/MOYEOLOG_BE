@@ -35,6 +35,12 @@ public class AccountController {
         return ResponseEntity.ok(accountService.verify(request.token(), request.password(), userId));
     }
 
+    /** 메일 링크를 쓰지 않고 상태·이메일만 본다(SIGNUP·EMAIL). 쓸 수 없으면 400. */
+    @PostMapping("/api/account/verify/preview")
+    public ResponseEntity<AccountDtos.VerifyResponse> previewVerify(@RequestBody AccountDtos.VerifyRequest request) {
+        return ResponseEntity.ok(accountService.previewToken(request.token()));
+    }
+
     @PostMapping("/api/account/password-reset")
     public ResponseEntity<Map<String, Object>> passwordReset(@RequestBody AccountDtos.EmailRequest request) {
         accountService.requestPasswordReset(request.email());
@@ -44,6 +50,13 @@ public class AccountController {
     @PostMapping("/api/account/password-reset/confirm")
     public ResponseEntity<Void> passwordResetConfirm(@RequestBody AccountDtos.PasswordResetConfirmRequest request) {
         accountService.confirmPasswordReset(request.token(), request.newPassword());
+        return ResponseEntity.noContent().build();
+    }
+
+    /** 재설정 링크가 아직 쓸 수 있는지(소모하지 않음). 화면이 열 때 불러 두 칸을 다 쓰기 전에 알려 준다. */
+    @PostMapping("/api/account/password-reset/check")
+    public ResponseEntity<Void> passwordResetCheck(@RequestBody AccountDtos.TokenRequest request) {
+        accountService.checkPasswordResetToken(request.token());
         return ResponseEntity.noContent().build();
     }
 
