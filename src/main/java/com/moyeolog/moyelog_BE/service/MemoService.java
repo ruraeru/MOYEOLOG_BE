@@ -47,7 +47,7 @@ import java.util.stream.Collectors;
  *   그리고 '수정 가능'으로 공유받은 친구. 친구 공유는 기본 읽기 전용, 모임에 공유한 개인 메모는 늘 읽기 전용.
  * - 삭제·공유·공유 해제·분석: 작성자
  * - 고정: 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장(모임 전체에 고정), 개인 메모는 작성자(본인에게만 고정)
- * - 즐겨찾기: 개인 메모만(공유받은·모임에 공유된 개인 메모 포함). 모임 메모는 즐겨찾기 대신 고정을 쓴다.
+ * - 즐겨찾기: 읽을 수 있는 사람 누구나, 사용자별 (모임 메모 포함. 모임 화면에서는 별을 숨기고 고정을 쓴다)
  */
 @Service
 @RequiredArgsConstructor
@@ -250,7 +250,7 @@ public class MemoService {
                 .collect(Collectors.toList());
     }
 
-    /** 내가 즐겨찾기했고 지금 볼 수 있는 개인 메모 (내 메모·공유받은 메모), 최신순. 모임 메모의 예전 즐겨찾기는 뺀다. */
+    /** 내가 즐겨찾기했고 지금 볼 수 있는 모든 메모 (내 메모·공유받은 메모·모임 메모), 최신순. */
     @Transactional(readOnly = true)
     public List<MemoResponse> getFavoriteMemos(UUID userId) {
         User user = findUserById(userId);
@@ -260,7 +260,7 @@ public class MemoService {
             return new ArrayList<>();
         }
         return memoRepository.findAllById(favoriteIds).stream()
-                .filter(memo -> memo.getGroupId() == null && canRead(memo, viewer))
+                .filter(memo -> canRead(memo, viewer))
                 .sorted(Comparator.comparing(Memo::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .map(memo -> convertToResponse(memo, viewer, favoriteIds))
                 .collect(Collectors.toList());
@@ -423,14 +423,10 @@ public class MemoService {
 
         boolean favorite;
         if (memoFavoriteRepository.existsByUser_IdAndMemo_Id(userId, memoId)) {
-            // 예전에 즐겨찾기한 모임 메모도 해제는 할 수 있다.
             // 동시에 해제돼 행이 이미 없어도 오류 없이 넘어간다.
             memoFavoriteRepository.deleteByUserIdAndMemoId(userId, memoId);
             favorite = false;
         } else {
-            if (memo.getGroupId() != null) {
-                throw new BadRequestException("모임 메모는 즐겨찾기할 수 없어요. 방장이나 작성자가 고정할 수 있어요.");
-            }
             memoFavoriteRepository.save(MemoFavorite.builder().user(user).memo(memo).build());
             // 동시 추가는 유니크 제약에 걸린다 → 409.
             ConcurrentUpdates.flush(memoFavoriteRepository::flush);
@@ -886,10 +882,9 @@ public class MemoService {
                     .build())
                 .collect(Collectors.toList());
 
-        // 모임 메모는 즐겨찾기 대상이 아니다(예전 행이 남아 있어도 false).
-        boolean isFavorite = memo.getGroupId() == null && (favoriteIds != null
+        boolean isFavorite = favoriteIds != null
                 ? favoriteIds.contains(memo.getId())
-                : memoFavoriteRepository.existsByUser_IdAndMemo_Id(viewerId, memo.getId()));
+                : memoFavoriteRepository.existsByUser_IdAndMemo_Id(viewerId, memo.getId());
 
         // 공유 대상 목록(친구·모임)은 작성자에게만 보여준다 (공유 관리 UI 와 '공유함' 표시용).
         List<MemoResponse.SharedUserResponse> sharedWith = new ArrayList<>();
