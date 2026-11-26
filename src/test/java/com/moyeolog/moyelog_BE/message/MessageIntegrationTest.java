@@ -1,6 +1,7 @@
 package com.moyeolog.moyelog_BE.message;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.moyeolog.moyelog_BE.event.ChangeEvent;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.notification.NotifyTestSupport.Session;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -27,12 +30,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /** 계약 8절 메시지 */
 @SpringBootTest
+@RecordApplicationEvents
 class MessageIntegrationTest {
 
     @Autowired private WebApplicationContext context;
     @Autowired private ApplicationEventPublisher publisher;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private MessageRepository messageRepository;
+    @Autowired private ApplicationEvents events;
 
     private MockMvc mockMvc;
 
@@ -213,6 +218,36 @@ class MessageIntegrationTest {
         assertThat(conv.size()).isEqualTo(1);
         assertThat(conv.get(0).path("friend").path("id").asText()).isEqualTo(a.userId().toString());
         assertThat(conv.get(0).path("unreadCount").asLong()).isEqualTo(1);
+        assertThat(conv.get(0).path("canSend").asBoolean(true)).isFalse();
+    }
+
+    @Test
+    @DisplayName("대화 지우기는 지운 본인에게만 messages 변경을 알린다(다른 탭·기기의 열린 대화 갱신)")
+    void deleteConversation_publishesChangeToSelf() throws Exception {
+        Session a = login(mockMvc, "지우기알림");
+        Session b = login(mockMvc, "지우기알림상대");
+        makeFriends(mockMvc, a, b);
+        send(b, a, "받은 것", 200);
+        events.clear();
+
+        mockMvc.perform(auth(delete("/api/messages/" + b.userId()), a)).andExpect(status().isNoContent());
+
+        assertThat(events.stream(ChangeEvent.class)
+                .filter(e -> e.topics().contains("messages"))
+                .toList())
+                .singleElement()
+                .satisfies(e -> assertThat(e.recipients()).containsExactly(a.userId()));
+    }
+
+    @Test
+    @DisplayName("대화 목록의 canSend: 지금 친구면 true")
+    void conversations_canSend() throws Exception {
+        Session a = login(mockMvc, "친구표시");
+        Session b = login(mockMvc, "친구표시상대");
+        makeFriends(mockMvc, a, b);
+        JsonNode conv = conversations(a);
+        assertThat(conv.size()).isEqualTo(1);
+        assertThat(conv.get(0).path("canSend").asBoolean(false)).isTrue();
     }
 
     @Test
