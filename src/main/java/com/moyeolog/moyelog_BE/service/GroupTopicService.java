@@ -214,8 +214,7 @@ public class GroupTopicService {
         targets.remove(topic.getAuthor().getId());
         if (targets.isEmpty()) return;
         UUID groupId = topic.getGroup().getId();
-        String message = author.getNickname() + "님이 \"" + CodePointSizeValidator.truncate(topic.getTitle(), 30)
-                + "\" 토픽 댓글에서 회원님을 언급했어요.";
+        String message = author.getNickname() + "님이 '" + shortTitle(topic.getTitle()) + "' 토픽 댓글에서 회원님을 언급했어요.";
         String link = "/groups/" + groupId + "?topic=" + topic.getId();
         for (UUID target : targets) {
             if (groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, target)) {
