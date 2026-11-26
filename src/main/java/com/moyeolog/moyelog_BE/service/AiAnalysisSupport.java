@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -77,6 +78,16 @@ public class AiAnalysisSupport {
      */
     public MemoInsightResponse run(String key, Supplier<Source> read,
                                    Function<Analyzed, MemoInsightResponse> write) {
+        return run(key, read,
+                source -> geminiService.analyze(source.content(), source.imageUrl(), source.id()),
+                (source, result) -> write.apply(new Analyzed(source, result)));
+    }
+
+    /**
+     * 같은 흐름의 일반형(날짜 조율 추천 등): read(읽기 트랜잭션) → call(트랜잭션 밖, LLM) → write(쓰기 트랜잭션).
+     * 같은 key 가 진행 중이면 409.
+     */
+    public <S, R, T> T run(String key, Supplier<S> read, Function<S, R> call, BiFunction<S, R, T> write) {
         // Open-in-View 가 요청 내내 붙잡아 두는 EntityManager 를 잠시 떼어 낸다.
         // 그대로 두면 첫 트랜잭션에서 얻은 커넥션을 요청이 끝날 때까지(LLM 대기 포함) 반납하지 않는다.
         Object suspended = null;
@@ -84,13 +95,13 @@ public class AiAnalysisSupport {
             suspended = TransactionSynchronizationManager.unbindResourceIfPossible(entityManagerFactory);
         }
         try {
-            Source source = readTx.execute(status -> read.get());
+            S source = readTx.execute(status -> read.get());
             if (!inProgress.add(key)) {
                 throw new ConflictException(IN_PROGRESS_MESSAGE);
             }
             try {
-                Map<String, Object> result = geminiService.analyze(source.content(), source.imageUrl(), source.id());
-                return writeTx.execute(status -> write.apply(new Analyzed(source, result)));
+                R result = call.apply(source);
+                return writeTx.execute(status -> write.apply(source, result));
             } finally {
                 inProgress.remove(key);
             }

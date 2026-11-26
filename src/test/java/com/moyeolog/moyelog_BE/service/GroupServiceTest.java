@@ -21,6 +21,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import com.moyeolog.moyelog_BE.datepoll.DatePollRepository;
+import com.moyeolog.moyelog_BE.datepoll.DatePollVoteRepository;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -56,6 +58,8 @@ class GroupServiceTest {
     @Mock private GroupBlockRepository groupBlockRepository;
     @Mock private FriendRepository friendRepository;
     @Mock private GroupImageService groupImageService;
+    @Mock private DatePollRepository datePollRepository;
+    @Mock private DatePollVoteRepository datePollVoteRepository;
     @Mock private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks private GroupService groupService;
