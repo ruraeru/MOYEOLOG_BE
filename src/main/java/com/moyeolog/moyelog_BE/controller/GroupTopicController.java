@@ -56,6 +56,21 @@ public class GroupTopicController {
         return ResponseEntity.ok().build();
     }
 
+    /** 고정 (작성자·방장만, 모임 전체에 보인다). 이미 고정돼 있으면 그대로 200. */
+    @PutMapping("/topics/{topicId}/pin")
+    public ResponseEntity<GroupTopicResponse> pinTopic(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID topicId) {
+        return ResponseEntity.ok(groupTopicService.pinTopic(UUID.fromString(userId), topicId, true));
+    }
+
+    @DeleteMapping("/topics/{topicId}/pin")
+    public ResponseEntity<GroupTopicResponse> unpinTopic(
+            @AuthenticationPrincipal String userId,
+            @PathVariable UUID topicId) {
+        return ResponseEntity.ok(groupTopicService.pinTopic(UUID.fromString(userId), topicId, false));
+    }
+
     @PostMapping("/topics/{topicId}/comments")
     public ResponseEntity<GroupTopicCommentResponse> createComment(
             @AuthenticationPrincipal String userId,

@@ -108,6 +108,17 @@ public class MemoController {
         return ResponseEntity.noContent().build();
     }
 
+    /** 고정 (모임 메모: 모임 전체에, 작성자·방장만 / 개인 메모: 작성자 본인에게, 작성자만). 이미 고정돼 있으면 그대로 200. */
+    @PutMapping("/{id}/pin")
+    public ResponseEntity<MemoResponse> pin(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
+        return ResponseEntity.ok(memoService.pinMemo(UUID.fromString(userId), id, true));
+    }
+
+    @DeleteMapping("/{id}/pin")
+    public ResponseEntity<MemoResponse> unpin(@AuthenticationPrincipal String userId, @PathVariable UUID id) {
+        return ResponseEntity.ok(memoService.pinMemo(UUID.fromString(userId), id, false));
+    }
+
     @PutMapping("/{id}/favorite")
     public ResponseEntity<MemoResponse> toggleFavorite(
             @AuthenticationPrincipal String userId,

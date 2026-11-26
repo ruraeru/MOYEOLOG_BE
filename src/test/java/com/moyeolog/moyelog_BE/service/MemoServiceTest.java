@@ -136,6 +136,33 @@ class MemoServiceTest {
     }
 
     @Test
+    @DisplayName("즐겨찾기 - 모임 메모는 추가할 수 없다(400)")
+    void toggleFavorite_GroupMemo_BadRequest() {
+        UUID groupId = UUID.randomUUID();
+        Memo groupMemo = Memo.builder().id(memoId).author(user).groupId(groupId).title("g").build();
+        given(memoRepository.findById(memoId)).willReturn(Optional.of(groupMemo));
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        given(groupMemberRepository.findByUser(user)).willReturn(List.of(membership(groupId, user)));
+        given(memoFavoriteRepository.existsByUser_IdAndMemo_Id(userId, memoId)).willReturn(false);
+
+        assertThatThrownBy(() -> memoService.toggleFavorite(userId, memoId))
+                .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
+        verify(memoFavoriteRepository, never()).save(any(MemoFavorite.class));
+    }
+
+    @Test
+    @DisplayName("고정 - 남의 개인 메모(공유받은 메모)는 고정할 수 없다(403)")
+    void pinMemo_NotAuthor_Forbidden() {
+        User other = User.builder().id(UUID.randomUUID()).nickname("other").build();
+        given(memoRepository.findByIdForUpdate(memoId)).willReturn(Optional.of(memo));
+        given(userRepository.findById(other.getId())).willReturn(Optional.of(other));
+
+        assertThatThrownBy(() -> memoService.pinMemo(other.getId(), memoId, true))
+                .isInstanceOf(UnauthorizedAccessException.class);
+        verify(memoRepository, never()).updatePinnedAt(any(), any());
+    }
+
+    @Test
     @DisplayName("모임 멤버인 경우 그룹 메모 접근 성공")
     void getMemo_GroupMember_Success() {
         UUID groupId = UUID.randomUUID();

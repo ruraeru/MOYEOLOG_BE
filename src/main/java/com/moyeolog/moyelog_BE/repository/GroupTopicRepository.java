@@ -35,6 +35,11 @@ public interface GroupTopicRepository extends JpaRepository<GroupTopic, UUID> {
     @Query("update GroupTopic t set t.imageUrl = :imageUrl where t.id = :id")
     int updateImageUrl(@Param("id") UUID id, @Param("imageUrl") String imageUrl);
 
+    /** 고정·해제. 수정 시각을 건드리지 않는다. 바꾼 뒤 영속성 컨텍스트를 비우므로 토픽을 다시 읽어야 한다. */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("update GroupTopic t set t.pinnedAt = :pinnedAt where t.id = :id")
+    int updatePinnedAt(@Param("id") UUID id, @Param("pinnedAt") java.time.LocalDateTime pinnedAt);
+
     /** 이 사람이 쓴 토픽 중 이 이미지를 쓰는 것이 있는지 (업로드 소유 확인) */
     boolean existsByAuthor_IdAndImageUrl(UUID authorId, String imageUrl);
 }

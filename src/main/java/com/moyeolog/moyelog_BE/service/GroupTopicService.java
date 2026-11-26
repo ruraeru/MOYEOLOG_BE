@@ -21,6 +21,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -56,8 +58,10 @@ public class GroupTopicService {
         Group group = findGroupById(groupId);
         validateMember(group, userId);
 
+        // 고정(공지)한 것 먼저(고정 시각 최신순), 나머지는 최신순 그대로
         return groupTopicRepository.findAllByGroupOrderByCreatedAtDesc(group).stream()
-                .map(this::convertToResponse)
+                .sorted(Comparator.comparing(GroupTopic::getPinnedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(topic -> convertToResponse(topic, userId))
                 .collect(Collectors.toList());
     }
 
@@ -77,7 +81,7 @@ public class GroupTopicService {
                 .imageUrl(imageUrl)
                 .build();
 
-        GroupTopicResponse response = convertToResponse(groupTopicRepository.save(topic));
+        GroupTopicResponse response = convertToResponse(groupTopicRepository.save(topic), userId);
         publishChange(groupId);
         return response;
     }
@@ -95,7 +99,7 @@ public class GroupTopicService {
         MemoInsightResponse insightResponse = insight != null ? convertToInsightResponse(insight) : null;
 
         return GroupTopicDetailResponse.builder()
-                .topic(convertToResponse(topic))
+                .topic(convertToResponse(topic, userId))
                 .comments(comments)
                 .authorCustomId(topic.getAuthor().getCustomId())
                 .insight(insightResponse)
@@ -118,7 +122,35 @@ public class GroupTopicService {
             groupImageService.deleteAfterCommit(previousImage);
         }
         publishChange(topic.getGroup().getId());
-        return convertToResponse(topic);
+        return convertToResponse(topic, userId);
+    }
+
+    /**
+     * 고정·해제: 지금 모임 멤버 중 작성자 또는 방장. 고정은 모임 전체에 보인다(공지).
+     * 이미 고정된 것을 다시 고정하면 처음 고정한 시각을 둔다. 수정 시각은 바꾸지 않는다. 알림은 보내지 않는다.
+     */
+    @Transactional
+    public GroupTopicResponse pinTopic(UUID userId, UUID topicId, boolean pin) {
+        GroupTopic topic = groupTopicRepository.findByIdForUpdate(topicId)
+                .orElseThrow(() -> GroupErrors.notFound(TOPIC_NOT_FOUND));
+        validateMember(topic.getGroup(), userId);
+        if (!canPin(topic, userId)) {
+            throw new UnauthorizedAccessException("방장이나 작성자만 고정할 수 있어요.");
+        }
+        UUID groupId = topic.getGroup().getId();
+        if (pin != (topic.getPinnedAt() != null)) {
+            groupTopicRepository.updatePinnedAt(topicId, pin ? LocalDateTime.now() : null);
+            // updatePinnedAt 이 영속성 컨텍스트를 비웠으므로 다시 읽는다.
+            topic = findTopicById(topicId);
+        }
+        publishChange(groupId);
+        return convertToResponse(topic, userId);
+    }
+
+    /** 고정 권한: 작성자 또는 방장 (모임 멤버인지는 따로 확인한다) */
+    private static boolean canPin(GroupTopic topic, UUID userId) {
+        return topic.getAuthor().getId().equals(userId)
+                || topic.getGroup().getCreatedBy().getId().equals(userId);
     }
 
     /** 삭제는 작성자 본인만 (모임을 나간 뒤에도 자기 글 정리는 허용). 동시 삭제는 두 번째가 404. */
@@ -376,8 +408,8 @@ public class GroupTopicService {
         }
     }
 
-    /** 목록·상세 응답. 예전 data URL 이미지는 변환 전까지 내보내지 않는다(응답 크기). */
-    private GroupTopicResponse convertToResponse(GroupTopic topic) {
+    /** 목록·상세 응답. 예전 data URL 이미지는 변환 전까지 내보내지 않는다(응답 크기). canPin 은 viewerId 기준. */
+    private GroupTopicResponse convertToResponse(GroupTopic topic, UUID viewerId) {
         long commentCount = groupTopicCommentRepository.countByTopic(topic);
         String imageUrl = topic.getImageUrl();
         return GroupTopicResponse.builder()
@@ -393,6 +425,8 @@ public class GroupTopicService {
                 .commentCount((int) commentCount)
                 .createdAt(topic.getCreatedAt())
                 .updatedAt(topic.getUpdatedAt())
+                .pinnedAt(topic.getPinnedAt())
+                .canPin(canPin(topic, viewerId))
                 .build();
     }
 

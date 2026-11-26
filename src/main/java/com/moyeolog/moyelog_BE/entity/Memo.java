@@ -66,6 +66,14 @@ public class Memo {
     @Builder.Default
     private Set<UUID> mentionedScheduleIds = new HashSet<>();
 
+    /**
+     * 고정한 시각(NULL = 고정 안 함). 모임 메모는 모임 전체에, 개인 메모는 작성자 본인에게만 고정으로 보인다.
+     * 메모 수정이 덮어쓰거나 고정이 수정 시각·version 을 바꾸지 않도록 엔티티로는 쓰지 않고
+     * MemoRepository.updatePinnedAt(일괄 UPDATE)으로만 바꾼다.
+     */
+    @Column(name = "pinned_at", insertable = false, updatable = false)
+    private LocalDateTime pinnedAt;
+
     /** 낙관적 잠금. 기존 행은 0 으로 채워진다. */
     @Version
     @Column(name = "version", nullable = false, columnDefinition = "BIGINT NOT NULL DEFAULT 0")
