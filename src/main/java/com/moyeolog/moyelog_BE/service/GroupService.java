@@ -15,6 +15,8 @@ import com.moyeolog.moyelog_BE.event.ChangeEvents;
 import com.moyeolog.moyelog_BE.event.LiveTopics;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
+import com.moyeolog.moyelog_BE.datepoll.DatePollRepository;
+import com.moyeolog.moyelog_BE.datepoll.DatePollVoteRepository;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
 import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.repository.*;
@@ -59,6 +61,8 @@ public class GroupService {
     private final GroupBlockRepository groupBlockRepository;
     private final FriendRepository friendRepository;
     private final GroupImageService groupImageService;
+    private final DatePollRepository datePollRepository;
+    private final DatePollVoteRepository datePollVoteRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     /** 프론트 lib/constants.ts THEME_COLORS 의 키 */
@@ -526,6 +530,7 @@ public class GroupService {
             throw notFound("모임 멤버를 찾을 수 없어요. 이미 나갔을 수 있어요.");
         }
         removeFromGroupSchedules(groupId, targetMemberId, changes);
+        datePollVoteRepository.deleteAllByGroupAndUser(groupId, targetMemberId);
 
         if (!groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, targetMemberId)) {
             groupBlockRepository.save(GroupBlock.builder()
@@ -559,6 +564,7 @@ public class GroupService {
             throw forbidden(NOT_MEMBER);
         }
         removeFromGroupSchedules(groupId, userId, changes);
+        datePollVoteRepository.deleteAllByGroupAndUser(groupId, userId);
         // 나간 사람이 보낸 대기 초대는 더 이상 유효하지 않다.
         groupInvitationRepository.deletePendingFromInviter(groupId, userId);
         changes.publish(eventPublisher);
@@ -609,6 +615,9 @@ public class GroupService {
         List<GroupTopic> topics = groupTopicRepository.findAllByGroup(group);
         List<String> topicImages = topics.stream().map(GroupTopic::getImageUrl).toList();
         groupTopicRepository.deleteAll(topics); // 댓글, AI 분석 결과는 cascade 로 함께 삭제
+        // 날짜 조율과 선택. 조율로 만든 일정은 위에서 개인 일정으로 남겼다.
+        datePollVoteRepository.deleteAllByGroupId(groupId);
+        datePollRepository.deleteAllByGroupId(groupId);
 
         groupInvitationRepository.deleteAllByGroup(group);
         groupBlockRepository.deleteAllByGroup(group);

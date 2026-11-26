@@ -62,17 +62,7 @@ public class GeminiService {
                 log.info("[AI] Including image in analysis for ID: {}", id);
             }
             String prompt = buildPrompt(content, image != null);
-            Map<String, Object> result;
-            try {
-                result = call(true, llmBaseUrl.replaceAll("/+$", "") + "/api/chat", ollamaRequest(prompt, image), id);
-            } catch (Exception e) {
-                // Ollama 가 실패하면(연결·시간 초과·HTTP 오류·빈 응답·형식 오류) Gemini 키가 있을 때만 Gemini 로 다시 보낸다.
-                if (apiKey == null || apiKey.isBlank()) {
-                    throw e;
-                }
-                log.warn("[AI] Ollama 실패 (ID: {}): {}. Gemini 로 재시도", id, describe(e));
-                result = call(false, GEMINI_API_URL, geminiRequest(prompt, image), id);
-            }
+            Map<String, Object> result = complete(prompt, ANALYSIS_SCHEMA, image, id, this::parseResult);
             if (image == null) {
                 // 이미지가 없으면 모델이 본문을 옮겨 적어도 OCR 결과는 비운다.
                 result.put("ocrText", "");
@@ -84,6 +74,45 @@ public class GeminiService {
             // 상위 API 의 응답 본문/URL 은 클라이언트에 돌려주지 않고 고정 문구만 사용한다.
             log.error("[AI] AI 분석 실패 (ID: {}): {}", id, describe(e), e);
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
+        }
+    }
+
+    /**
+     * 자유 프롬프트로 JSON 객체 하나를 받는다(이미지 없음). schema 는 Ollama format 에 넣는 JSON Schema.
+     * 실패 흐름은 analyze 와 같다: Ollama 실패 → (키가 있으면) Gemini, 그래도 실패하면 AiAnalysisException(502).
+     * 결과 값의 타입 검사는 부르는 쪽이 한다.
+     */
+    public Map<String, Object> generateJson(String prompt, Map<String, Object> schema, String id) {
+        try {
+            return complete(prompt, schema, null, id, this::parseJson);
+        } catch (com.moyeolog.moyelog_BE.exception.AiAnalysisException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[AI] AI 생성 실패 (ID: {}): {}", id, describe(e), e);
+            throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException(GENERIC_ERROR_MESSAGE);
+        }
+    }
+
+    private static final Map<String, Object> ANALYSIS_SCHEMA = Map.of(
+            "type", "object",
+            "properties", Map.of(
+                    "ocrText", Map.of("type", "string"),
+                    "summary", Map.of("type", "string"),
+                    "keywords", Map.of("type", "array", "items", Map.of("type", "string"))),
+            "required", List.of("ocrText", "summary", "keywords"));
+
+    /** Ollama 에 보내고, 실패하면(연결·시간 초과·HTTP 오류·빈 응답·형식 오류) Gemini 키가 있을 때만 Gemini 로 다시 보낸다. */
+    private Map<String, Object> complete(String prompt, Map<String, Object> schema, FileService.ImageData image,
+                                         String id, java.util.function.Function<String, Map<String, Object>> parser)
+            throws Exception {
+        try {
+            return call(true, llmBaseUrl.replaceAll("/+$", "") + "/api/chat", ollamaRequest(prompt, schema, image), id, parser);
+        } catch (Exception e) {
+            if (apiKey == null || apiKey.isBlank()) {
+                throw e;
+            }
+            log.warn("[AI] Ollama 실패 (ID: {}): {}. Gemini 로 재시도", id, describe(e));
+            return call(false, GEMINI_API_URL, geminiRequest(prompt, image), id, parser);
         }
     }
 
@@ -112,7 +141,8 @@ public class GeminiService {
     }
 
     /** 한 공급자에 요청하고 결과를 파싱한다. 503/429 는 최대 3번까지 다시 보낸다. */
-    private Map<String, Object> call(boolean ollama, String url, HttpEntity<?> entity, String id) throws Exception {
+    private Map<String, Object> call(boolean ollama, String url, HttpEntity<?> entity, String id,
+                                     java.util.function.Function<String, Map<String, Object>> parser) throws Exception {
         int maxRetries = 3;
         long waitTime = 2000; // Start with 2 seconds
 
@@ -145,11 +175,11 @@ public class GeminiService {
         }
 
         String body = response == null ? "" : new String(response, java.nio.charset.StandardCharsets.UTF_8);
-        return parseResult(ollama ? ollamaText(body) : geminiText(body));
+        return parser.apply(ollama ? ollamaText(body) : geminiText(body));
     }
 
     /** Ollama /api/chat 요청. format 에 JSON Schema 를 줘서 결과 형식을 고정한다. */
-    private HttpEntity<Map<String, Object>> ollamaRequest(String prompt, FileService.ImageData image) {
+    private HttpEntity<Map<String, Object>> ollamaRequest(String prompt, Map<String, Object> schema, FileService.ImageData image) {
         Map<String, Object> message = new HashMap<>();
         message.put("role", "user");
         message.put("content", prompt);
@@ -159,13 +189,7 @@ public class GeminiService {
         Map<String, Object> body = new HashMap<>();
         body.put("model", llmModel);
         body.put("messages", List.of(message));
-        body.put("format", Map.of(
-                "type", "object",
-                "properties", Map.of(
-                        "ocrText", Map.of("type", "string"),
-                        "summary", Map.of("type", "string"),
-                        "keywords", Map.of("type", "array", "items", Map.of("type", "string"))),
-                "required", List.of("ocrText", "summary", "keywords")));
+        body.put("format", schema);
         body.put("think", false);
         body.put("stream", false);
         body.put("keep_alive", "30m");
@@ -236,6 +260,11 @@ public class GeminiService {
     }
 
     private Map<String, Object> parseResult(String textResponse) {
+        return normalize(parseJson(textResponse));
+    }
+
+    /** 응답 글에서 JSON 객체를 꺼낸다(마크다운 코드 블록 허용). 아니면 AiAnalysisException. */
+    private Map<String, Object> parseJson(String textResponse) {
         log.debug("[AI] Raw Text Response: {}", textResponse);
 
         try {
@@ -250,7 +279,8 @@ public class GeminiService {
             }
 
             Map<String, Object> parsed = objectMapper.readValue(jsonStr, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-            return normalize(parsed);
+            if (parsed == null) throw new IllegalStateException("null JSON");
+            return parsed;
         } catch (Exception e) {
             log.error("[AI] JSON Parsing Failed. Raw text: {}", textResponse);
             throw new com.moyeolog.moyelog_BE.exception.AiAnalysisException("AI 응답 형식이 올바르지 않아요. 잠시 후 다시 시도해 주세요.");
