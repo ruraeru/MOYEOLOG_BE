@@ -7,6 +7,8 @@ import com.moyeolog.moyelog_BE.live.LiveAudience;
 import com.moyeolog.moyelog_BE.event.NotificationEvent;
 import com.moyeolog.moyelog_BE.event.NotificationType;
 import com.moyeolog.moyelog_BE.event.UserDeletingEvent;
+import com.moyeolog.moyelog_BE.exception.BadRequestException;
+import com.moyeolog.moyelog_BE.exception.ConflictException;
 import com.moyeolog.moyelog_BE.exception.UnauthorizedAccessException;
 import com.moyeolog.moyelog_BE.midpoint.MidpointDtos.*;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
@@ -20,10 +22,14 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 일정의 중간 지점 찾기.
@@ -41,6 +47,11 @@ public class MidpointService {
     private final UserRepository userRepository;
     private final ApplicationEventPublisher eventPublisher;
 
+    /** 같은 일정에 출발지 요청을 다시 보낼 수 있는 간격 (연달아 눌러 같은 알림이 쌓이지 않게) */
+    static final Duration REQUEST_COOLDOWN = Duration.ofMinutes(10);
+    /** 일정별 마지막 출발지 요청 시각 (앱 인스턴스 하나 전제, 재시작하면 비워진다) */
+    private final Map<UUID, Instant> lastRequestAt = new ConcurrentHashMap<>();
+
     @Transactional(readOnly = true)
     public MidpointResponse get(UUID userId, UUID scheduleId) {
         Schedule schedule = findSchedule(scheduleId);
@@ -52,6 +63,11 @@ public class MidpointService {
         // 같은 사람이 동시에 두 번 저장해도 한 줄만 남도록 일정 행을 잠근다.
         Schedule schedule = findScheduleForUpdate(scheduleId);
         Set<UUID> eligible = requireEligible(schedule, userId);
+        // 날씨·지하철역 찾기와 같은 국내 범위만 받는다 (국외 좌표가 섞이면 가운데가 바다로 간다)
+        if (!(request.latitude() >= 32 && request.latitude() <= 39.5
+                && request.longitude() >= 123 && request.longitude() <= 132.5)) {
+            throw new BadRequestException("국내 장소만 출발지로 적을 수 있어요.");
+        }
         String name = request.name().trim();
 
         ScheduleDeparture departure = departureRepository.findBySchedule_IdAndUser_Id(scheduleId, userId).orElse(null);
@@ -91,9 +107,25 @@ public class MidpointService {
 
         String message = schedule.getAuthor().getNickname() + "님이 '" + shortTitle(schedule)
                 + "' 일정의 중간 지점을 찾고 있어요. 출발지를 적어 주세요.";
+        List<UUID> recipients = eligible.stream()
+                .filter(r -> !r.equals(userId) && !entered.contains(r)).toList();
+        if (!recipients.isEmpty()) {
+            Instant now = Instant.now();
+            Instant[] previous = new Instant[1];
+            lastRequestAt.compute(scheduleId, (id, last) -> {
+                if (last != null && last.plus(REQUEST_COOLDOWN).isAfter(now)) {
+                    previous[0] = last;
+                    return last;
+                }
+                return now;
+            });
+            if (previous[0] != null) {
+                long minutes = Math.max(1, (Duration.between(now, previous[0].plus(REQUEST_COOLDOWN)).toSeconds() + 59) / 60);
+                throw new ConflictException("방금 물어봤어요. " + minutes + "분 뒤에 다시 물어볼 수 있어요.");
+            }
+        }
         int sent = 0;
-        for (UUID recipient : eligible) {
-            if (recipient.equals(userId) || entered.contains(recipient)) continue;
+        for (UUID recipient : recipients) {
             eventPublisher.publishEvent(new NotificationEvent(recipient, userId,
                     NotificationType.SCHEDULE_PARTICIPANT, message, "/schedule/" + scheduleId));
             sent++;
