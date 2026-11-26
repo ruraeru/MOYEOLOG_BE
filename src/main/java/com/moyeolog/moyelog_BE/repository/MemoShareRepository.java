@@ -17,6 +17,7 @@ import java.util.UUID;
 public interface MemoShareRepository extends JpaRepository<MemoShare, UUID> {
     List<MemoShare> findBySharedToOrderBySharedAtDesc(User user);
     boolean existsByMemo_IdAndSharedTo_Id(UUID memoId, UUID userId);
+    boolean existsByMemo_IdAndSharedTo_IdAndCanEditTrue(UUID memoId, UUID userId);
 
     List<MemoShare> findAllByMemo_IdAndSharedTo_Id(UUID memoId, UUID userId);
 

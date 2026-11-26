@@ -18,6 +18,7 @@ import com.moyeolog.moyelog_BE.repository.FriendRepository;
 import com.moyeolog.moyelog_BE.repository.GroupMemberRepository;
 import com.moyeolog.moyelog_BE.repository.GroupRepository;
 import com.moyeolog.moyelog_BE.repository.MemoRepository;
+import com.moyeolog.moyelog_BE.repository.MemoGroupShareRepository;
 import com.moyeolog.moyelog_BE.repository.MemoShareRepository;
 import com.moyeolog.moyelog_BE.repository.ScheduleRepository;
 import com.moyeolog.moyelog_BE.repository.UserRepository;
@@ -50,6 +51,7 @@ public class ScheduleService {
     private final GroupRepository groupRepository;
     private final FriendRepository friendRepository;
     private final MemoShareRepository memoShareRepository;
+    private final MemoGroupShareRepository memoGroupShareRepository;
     private final ScheduleDepartureRepository scheduleDepartureRepository;
     private final ApplicationEventPublisher eventPublisher;
 
@@ -320,6 +322,7 @@ public class ScheduleService {
     private boolean canReadMemo(Memo memo, UUID userId) {
         if (memo.getAuthor().getId().equals(userId)) return true;
         if (memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), userId)) return true;
+        if (memoGroupShareRepository.existsSharedToMember(memo.getId(), userId)) return true;
         return memo.getGroupId() != null
                 && groupMemberRepository.existsByGroup_IdAndUser_Id(memo.getGroupId(), userId);
     }

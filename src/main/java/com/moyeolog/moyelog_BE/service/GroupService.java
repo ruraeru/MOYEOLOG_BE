@@ -63,6 +63,7 @@ public class GroupService {
     private final GroupImageService groupImageService;
     private final DatePollRepository datePollRepository;
     private final DatePollVoteRepository datePollVoteRepository;
+    private final MemoGroupShareRepository memoGroupShareRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     /** 프론트 lib/constants.ts THEME_COLORS 의 키 */
@@ -531,6 +532,8 @@ public class GroupService {
         }
         removeFromGroupSchedules(groupId, targetMemberId, changes);
         datePollVoteRepository.deleteAllByGroupAndUser(groupId, targetMemberId);
+        // 내보내진 사람이 이 모임에 공유한 개인 메모는 거둔다.
+        memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, targetMemberId);
 
         if (!groupBlockRepository.existsByGroup_IdAndUser_Id(groupId, targetMemberId)) {
             groupBlockRepository.save(GroupBlock.builder()
@@ -565,6 +568,8 @@ public class GroupService {
         }
         removeFromGroupSchedules(groupId, userId, changes);
         datePollVoteRepository.deleteAllByGroupAndUser(groupId, userId);
+        // 나간 사람이 이 모임에 공유한 개인 메모는 거둔다.
+        memoGroupShareRepository.deleteAllByGroupIdAndAuthorId(groupId, userId);
         // 나간 사람이 보낸 대기 초대는 더 이상 유효하지 않다.
         groupInvitationRepository.deletePendingFromInviter(groupId, userId);
         changes.publish(eventPublisher);
@@ -608,6 +613,8 @@ public class GroupService {
         for (Memo memo : memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId)) {
             memo.detachFromGroup();
         }
+        // 이 모임에 공유한 개인 메모는 공유만 지운다(메모는 작성자에게 남는다).
+        memoGroupShareRepository.deleteAllByGroupId(groupId);
         for (Schedule schedule : scheduleRepository.findAllByGroupIdOrderByStartTimeAsc(groupId)) {
             schedule.detachFromGroup();
         }

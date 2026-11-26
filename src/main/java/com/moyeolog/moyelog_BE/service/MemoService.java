@@ -41,9 +41,10 @@ import java.util.stream.Collectors;
  * 메모 비즈니스 로직을 처리하는 서비스 클래스입니다.
  *
  * 권한 규칙
- * - 읽기: 작성자, 공유받은 사람, (모임 메모) 현재 모임 멤버
- * - 수정·태그: 개인 메모는 작성자, 모임 메모는 현재 모임 멤버 (나간·강퇴된 작성자는 수정 불가)
- * - 삭제·공유: 작성자
+ * - 읽기: 작성자, 공유받은 사람, (모임 메모) 현재 모임 멤버, (모임에 공유한 개인 메모) 그 모임의 현재 멤버
+ * - 수정·태그: 개인 메모는 작성자, 모임 메모는 현재 모임 멤버 (나간·강퇴된 작성자는 수정 불가),
+ *   그리고 '수정 가능'으로 공유받은 친구. 친구 공유는 기본 읽기 전용, 모임에 공유한 개인 메모는 늘 읽기 전용.
+ * - 삭제·공유·공유 해제·분석: 작성자
  */
 @Service
 @RequiredArgsConstructor
@@ -55,6 +56,7 @@ public class MemoService {
     private final FileService fileService;
     private final MemoTagRepository memoTagRepository;
     private final MemoShareRepository memoShareRepository;
+    private final MemoGroupShareRepository memoGroupShareRepository;
     private final MemoAiInsightRepository memoAiInsightRepository;
     private final AiAnalysisSupport aiAnalysisSupport;
     private final GroupRepository groupRepository;
@@ -73,7 +75,10 @@ public class MemoService {
 
     // ─── 공개 메서드 (API) ──────────────────────────────────────────
 
-    /** 메모 공유: 작성자만, 그리고 작성자의 (수락된) 친구에게만 공유할 수 있습니다. */
+    /**
+     * 메모 공유: 작성자만, 그리고 작성자의 (수락된) 친구에게만 공유할 수 있습니다.
+     * canEdit 이 true 면 '수정 가능'으로 공유한다. 이미 공유한 친구는 권한만 이 값으로 바꾼다.
+     */
     @Transactional
     public void shareMemo(UUID authorId, UUID memoId, MemoShareRequest request) {
         // 같은 메모에 대한 동시 공유를 줄 세운다 (중복 행 방지).
@@ -86,6 +91,7 @@ public class MemoService {
         }
         friendIds.remove(null);
         friendIds.remove(authorId);
+        boolean canEdit = request != null && Boolean.TRUE.equals(request.getCanEdit());
         if (friendIds.isEmpty()) {
             throw new BadRequestException("공유할 친구를 한 명 이상 선택해 주세요.");
         }
@@ -102,9 +108,12 @@ public class MemoService {
 
         List<User> newlyShared = new ArrayList<>();
         for (User friend : friends) {
-            if (!memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), friend.getId())) {
-                memoShareRepository.save(MemoShare.builder().memo(memo).sharedTo(friend).build());
+            List<MemoShare> existing = memoShareRepository.findAllByMemo_IdAndSharedTo_Id(memo.getId(), friend.getId());
+            if (existing.isEmpty()) {
+                memoShareRepository.save(MemoShare.builder().memo(memo).sharedTo(friend).canEdit(canEdit).build());
                 newlyShared.add(friend);
+            } else {
+                existing.forEach(share -> share.changeCanEdit(canEdit));
             }
         }
         ConcurrentUpdates.flush(memoShareRepository::flush);
@@ -132,8 +141,39 @@ public class MemoService {
             throw new ItemNotFoundException("이 메모를 공유받은 사람이 아니에요.");
         }
         // 더 이상 읽을 수 없게 된 사람의 즐겨찾기도 지운다 (다시 공유해도 즐겨찾기가 되살아나지 않도록).
-        if (!isCurrentGroupMember(memo, targetUserId)) {
+        if (!isCurrentGroupMember(memo, targetUserId)
+                && !memoGroupShareRepository.existsSharedToMember(memoId, targetUserId)) {
             memoFavoriteRepository.deleteByUserIdAndMemoId(targetUserId, memoId);
+        }
+        audience.publish(eventPublisher);
+    }
+
+    /** 개인 메모를 작성자가 속한 모임에 공유한다(그 모임 멤버는 읽기만). 이미 공유했으면 그대로 둔다. */
+    @Transactional
+    public void shareMemoToGroup(UUID authorId, UUID memoId, UUID groupId) {
+        Memo memo = findMemoForUpdate(memoId);
+        validateAuthor(memo, authorId);
+        if (memo.getGroupId() != null) {
+            throw new BadRequestException("모임에서 쓴 메모는 다른 모임에 공유할 수 없어요.");
+        }
+        requireGroupMember(groupId, authorId);
+        if (!memoGroupShareRepository.existsByMemo_IdAndGroupId(memoId, groupId)) {
+            memoGroupShareRepository.save(MemoGroupShare.builder().memo(memo).groupId(groupId).build());
+            // 동시에 같은 모임에 공유하면 유니크 제약에 걸린다 → 409.
+            ConcurrentUpdates.flush(memoGroupShareRepository::flush);
+        }
+        audience(memo).publish(eventPublisher);
+    }
+
+    /** 모임 공유 해제: 작성자만 */
+    @Transactional
+    public void unshareMemoFromGroup(UUID authorId, UUID memoId, UUID groupId) {
+        Memo memo = findMemoById(memoId);
+        validateAuthor(memo, authorId);
+        // 공유가 풀린 모임 멤버의 화면에서도 사라져야 하므로 지우기 전에 받는 사람을 정한다.
+        ChangeEvents audience = audience(memo);
+        if (memoGroupShareRepository.deleteByMemoIdAndGroupId(memoId, groupId) == 0) {
+            throw new ItemNotFoundException("이 모임에 공유한 메모가 아니에요.");
         }
         audience.publish(eventPublisher);
     }
@@ -319,13 +359,18 @@ public class MemoService {
         return convertToResponse(memo, viewer, null);
     }
 
-    /** 그룹 메모 목록: 그룹 멤버 전용 (없는 그룹 404, 비멤버 403) */
+    /**
+     * 그룹 메모 목록: 그룹 멤버 전용 (없는 그룹 404, 비멤버 403).
+     * 모임에서 쓴 메모 다음에 이 모임에 공유된 개인 메모(groupId 가 없다, 읽기 전용)가 온다.
+     */
     @Transactional(readOnly = true)
     public List<MemoResponse> getGroupMemos(UUID userId, UUID groupId) {
         requireGroupMember(groupId, userId);
         Viewer viewer = viewer(findUserById(userId));
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
-        return memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId).stream()
+        List<Memo> memos = new ArrayList<>(memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId));
+        memos.addAll(memoGroupShareRepository.findMemosByGroupId(groupId));
+        return memos.stream()
                 .map(memo -> convertToResponse(memo, viewer, favoriteIds))
                 .collect(Collectors.toList());
     }
@@ -407,7 +452,8 @@ public class MemoService {
 
     /** 지금 이 메모를 볼 수 있는 사람(작성자·공유받은 사람·모임 멤버). group:{gid} 는 모임 멤버에게만 (LiveAudience). 커밋 뒤에 보낸다 */
     private ChangeEvents audience(Memo memo) {
-        return LiveAudience.addMemo(new ChangeEvents(), memo, memoShareRepository, groupMemberRepository);
+        return LiveAudience.addMemo(new ChangeEvents(), memo, memoShareRepository, memoGroupShareRepository,
+                groupMemberRepository);
     }
 
     private void deleteMemoInternal(Memo memo) {
@@ -428,6 +474,7 @@ public class MemoService {
         // 연관된 자식 엔티티 삭제
         memoTagRepository.deleteAllByMemo(memo);
         memoShareRepository.deleteAllByMemo(memo);
+        memoGroupShareRepository.deleteAllByMemoId(memo.getId());
         memoFavoriteRepository.deleteAllByMemo(memo);
         if (memoAiInsightRepository.existsById(memo.getId())) {
             memoAiInsightRepository.deleteById(memo.getId());
@@ -484,32 +531,38 @@ public class MemoService {
                 && groupMemberRepository.existsByGroup_IdAndUser_Id(memo.getGroupId(), userId);
     }
 
-    /** 읽기 권한: 작성자, (그룹 메모의 경우) 현재 그룹 멤버, 공유받은 사용자 */
+    /** 읽기 권한: 작성자, (그룹 메모의 경우) 현재 그룹 멤버, 공유받은 사용자, 공유한 모임의 현재 멤버 */
     private boolean canRead(Memo memo, Viewer viewer) {
         if (memo.getAuthor().getId().equals(viewer.id())) return true;
         if (viewer.isMemberOf(memo.getGroupId())) return true;
-        return memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), viewer.id());
+        if (memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), viewer.id())) return true;
+        return memoGroupShareRepository.existsSharedToMember(memo.getId(), viewer.id());
     }
 
-    /** 수정 권한: 모임 메모는 현재 모임 멤버, 개인 메모는 작성자. */
+    /** 수정 권한: 모임 메모는 현재 모임 멤버, 개인 메모는 작성자, 그리고 '수정 가능'으로 공유받은 사람. */
     private boolean canEdit(Memo memo, Viewer viewer) {
-        if (memo.getGroupId() != null) {
-            return viewer.isMemberOf(memo.getGroupId());
-        }
-        return memo.getAuthor().getId().equals(viewer.id());
+        boolean byRole = memo.getGroupId() != null
+                ? viewer.isMemberOf(memo.getGroupId())
+                : memo.getAuthor().getId().equals(viewer.id());
+        return byRole || memoShareRepository.existsByMemo_IdAndSharedTo_IdAndCanEditTrue(memo.getId(), viewer.id());
     }
 
     private void validateAccess(Memo memo, UUID userId) {
         boolean readable = memo.getAuthor().getId().equals(userId)
                 || memoShareRepository.existsByMemo_IdAndSharedTo_Id(memo.getId(), userId)
-                || isCurrentGroupMember(memo, userId);
+                || isCurrentGroupMember(memo, userId)
+                || memoGroupShareRepository.existsSharedToMember(memo.getId(), userId);
         if (!readable) {
             throw new UnauthorizedAccessException(NO_READ_PERMISSION);
         }
     }
 
-    /** 수정 권한: 모임 메모는 현재 모임 멤버만 (나간·강퇴된 작성자도 불가), 개인 메모는 작성자만. */
+    /**
+     * 수정 권한: 모임 메모는 현재 모임 멤버만 (나간·강퇴된 작성자도 불가), 개인 메모는 작성자만.
+     * 어느 쪽이든 '수정 가능'으로 공유받은 사람은 고칠 수 있다.
+     */
     private void validateEditAccess(Memo memo, UUID userId) {
+        if (memoShareRepository.existsByMemo_IdAndSharedTo_IdAndCanEditTrue(memo.getId(), userId)) return;
         if (memo.getGroupId() != null) {
             if (isCurrentGroupMember(memo, userId)) return;
             if (memo.getAuthor().getId().equals(userId)) {
@@ -726,7 +779,10 @@ public class MemoService {
         return CodePointSizeValidator.truncate(trimmed, NOTIFICATION_TITLE_LENGTH) + "…";
     }
 
-    /** 작성자: 모두 true(모임을 나간 작성자는 수정·태그 false). 모임 멤버: 수정·태그. 공유받은 사람: 모두 false. */
+    /**
+     * 작성자: 모두 true(모임을 나간 작성자는 수정·태그 false). 모임 멤버: 수정·태그.
+     * 공유받은 사람: '수정 가능'이면 수정·태그, 아니면 모두 false. 공유한 모임의 멤버: 모두 false.
+     */
     private MemoResponse.Permissions permissionsOf(Memo memo, Viewer viewer) {
         boolean isAuthor = memo.getAuthor().getId().equals(viewer.id());
         boolean edit = canEdit(memo, viewer);
@@ -775,18 +831,20 @@ public class MemoService {
                 ? favoriteIds.contains(memo.getId())
                 : memoFavoriteRepository.existsByUser_IdAndMemo_Id(viewerId, memo.getId());
 
-        // 공유 대상 목록은 작성자에게만 보여준다 (공유 해제 UI 용).
+        // 공유 대상 목록(친구·모임)은 작성자에게만 보여준다 (공유 관리 UI 와 '공유함' 표시용).
         List<MemoResponse.SharedUserResponse> sharedWith = new ArrayList<>();
+        List<UUID> sharedGroupIds = new ArrayList<>();
         if (memo.getAuthor().getId().equals(viewerId)) {
+            // (memo, 사용자) 는 유니크라 한 사람당 한 줄이다.
             sharedWith = memoShareRepository.findAllByMemo(memo).stream()
-                    .map(MemoShare::getSharedTo)
-                    .distinct()
-                    .map(u -> MemoResponse.SharedUserResponse.builder()
-                            .id(u.getId())
-                            .nickname(u.getNickname())
-                            .profileImage(u.getProfileImage())
+                    .map(share -> MemoResponse.SharedUserResponse.builder()
+                            .id(share.getSharedTo().getId())
+                            .nickname(share.getSharedTo().getNickname())
+                            .profileImage(share.getSharedTo().getProfileImage())
+                            .canEdit(share.isCanEdit())
                             .build())
                     .collect(Collectors.toList());
+            sharedGroupIds = memoGroupShareRepository.findGroupIdsByMemoId(memo.getId());
         }
 
         return MemoResponse.builder()
@@ -804,6 +862,7 @@ public class MemoService {
                 .insight(insight != null ? convertToInsightResponse(insight) : null)
                 .isFavorite(isFavorite)
                 .sharedWith(sharedWith)
+                .sharedGroupIds(sharedGroupIds)
                 .taggedMemos(memoSummaries)
                 .taggedSchedules(scheduleSummaries)
                 .createdAt(memo.getCreatedAt())

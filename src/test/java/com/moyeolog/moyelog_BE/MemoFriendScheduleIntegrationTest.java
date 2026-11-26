@@ -339,6 +339,111 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
+    @DisplayName("친구 공유 권한: 기본 읽기 전용, '수정 가능'이면 고칠 수 있음(삭제·재공유·해제 불가), 다시 공유하면 권한만 바뀜")
+    void share_canEditPerFriend() throws Exception {
+        Session author = login("sauthor");
+        Session friend = login("sfriend");
+        makeFriends(author, friend);
+        String memoId = createMemo(author, Map.of("title", "여행 계획", "content", "c")).path("id").asText();
+        String shareUrl = "/api/memos/" + memoId + "/share";
+
+        // 기본 공유: 읽기 전용
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of(friend.userId()))))
+                .andExpect(status().isOk());
+        mockMvc.perform(auth(get("/api/memos/" + memoId), friend)).andExpect(jsonPath("$.permissions.edit").value(false));
+        mockMvc.perform(auth(get("/api/memos/" + memoId), author)).andExpect(jsonPath("$.sharedWith[0].canEdit").value(false));
+        assertThat(updateMemo(friend, memoId, Map.of("title", "x", "content", "x")).getResponse().getStatus()).isEqualTo(403);
+
+        // 같은 친구에게 '수정 가능'으로 다시 공유 → 권한만 바뀌고 행은 1개
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of(friend.userId()), "canEdit", true)))
+                .andExpect(status().isOk());
+        mockMvc.perform(auth(get("/api/memos/" + memoId), author))
+                .andExpect(jsonPath("$.sharedWith.length()").value(1))
+                .andExpect(jsonPath("$.sharedWith[0].canEdit").value(true));
+        mockMvc.perform(auth(get("/api/memos/" + memoId), friend))
+                .andExpect(jsonPath("$.permissions.edit").value(true))
+                .andExpect(jsonPath("$.permissions.tag").value(true))
+                .andExpect(jsonPath("$.permissions.delete").value(false))
+                .andExpect(jsonPath("$.permissions.share").value(false))
+                .andExpect(jsonPath("$.permissions.analyze").value(false))
+                .andExpect(jsonPath("$.sharedWith.length()").value(0));
+        MvcResult edited = updateMemo(friend, memoId, Map.of("title", "친구가 고침", "content", "c2"));
+        assertThat(edited.getResponse().getStatus()).isEqualTo(200);
+        assertThat(json(edited).path("lastModifierId").asText()).isEqualTo(friend.userId());
+
+        // 삭제·재공유·공유 해제(남의 것)는 작성자만
+        mockMvc.perform(auth(delete("/api/memos/" + memoId), friend)).andExpect(status().isForbidden());
+        mockMvc.perform(jsonBody(auth(post(shareUrl), friend), Map.of("friendIds", List.of(author.userId()), "canEdit", true)))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(auth(delete(shareUrl + "/" + author.userId()), friend)).andExpect(status().isForbidden());
+
+        // 읽기 전용으로 되돌리면 다시 403
+        mockMvc.perform(jsonBody(auth(post(shareUrl), author), Map.of("friendIds", List.of(friend.userId()), "canEdit", false)))
+                .andExpect(status().isOk());
+        assertThat(updateMemo(friend, memoId, Map.of("title", "y", "content", "y")).getResponse().getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("개인 메모를 모임에 공유: 멤버는 읽기만, 모임 메모 목록에 보임, 모임 밖·나간 사람은 못 봄, 작성자만 해제, 모임 삭제 때 정리")
+    void groupShare_readOnlyForMembers() throws Exception {
+        Session owner = login("gsowner");
+        Session member = login("gsmember");
+        Session outsider = login("gsout");
+        String groupId = createGroup(owner, "독서 모임");
+        joinGroup(member, groupId, owner);
+        String otherGroup = createGroup(outsider, "남의 모임");
+        String memoId = createMemo(owner, Map.of("title", "개인 메모", "content", "c")).path("id").asText();
+        String groupMemoId = createMemo(member, Map.of("title", "모임 메모", "content", "c", "groupId", groupId)).path("id").asText();
+        String shareUrl = "/api/memos/" + memoId + "/group-share/" + groupId;
+
+        // 내가 속하지 않은 모임 403, 모임에서 쓴 메모 400, 작성자가 아니면 403
+        mockMvc.perform(auth(post("/api/memos/" + memoId + "/group-share/" + otherGroup), owner)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(post("/api/memos/" + groupMemoId + "/group-share/" + groupId), member)).andExpect(status().isBadRequest());
+        mockMvc.perform(auth(post(shareUrl), member)).andExpect(status().isForbidden());
+
+        mockMvc.perform(auth(post(shareUrl), owner)).andExpect(status().isOk());
+        mockMvc.perform(auth(post(shareUrl), owner)).andExpect(status().isOk()); // 다시 해도 행 1개
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM memo_group_shares WHERE memo_id = ?",
+                Integer.class, UUID.fromString(memoId))).isEqualTo(1);
+        mockMvc.perform(auth(get("/api/memos/" + memoId), owner)).andExpect(jsonPath("$.sharedGroupIds[0]").value(groupId));
+
+        // 멤버: 모임 메모 목록에서 모임에서 쓴 메모 다음에 보이고, 읽기 전용(모임에서 쓴 메모는 수정 가능)
+        JsonNode list = json(mockMvc.perform(auth(get("/api/groups/" + groupId + "/memos"), member))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(list.size()).isEqualTo(2);
+        assertThat(list.get(0).path("id").asText()).isEqualTo(groupMemoId);
+        assertThat(list.get(0).path("permissions").path("edit").asBoolean()).isTrue();
+        JsonNode shared = list.get(1);
+        assertThat(shared.path("id").asText()).isEqualTo(memoId);
+        assertThat(shared.path("groupId").isNull()).isTrue();
+        assertThat(shared.path("permissions").path("edit").asBoolean()).isFalse();
+        assertThat(shared.path("permissions").path("tag").asBoolean()).isFalse();
+        assertThat(shared.path("sharedGroupIds").size()).isZero(); // 작성자에게만
+        assertThat(updateMemo(member, memoId, Map.of("title", "x", "content", "x")).getResponse().getStatus()).isEqualTo(403);
+        mockMvc.perform(jsonBody(auth(put("/api/memos/" + memoId + "/tags"), member), Map.of("tags", List.of("a"))))
+                .andExpect(status().isForbidden());
+
+        // 모임 밖 사람은 못 보고, 작성자만 해제할 수 있다
+        mockMvc.perform(auth(get("/api/memos/" + memoId), outsider)).andExpect(status().isForbidden());
+        mockMvc.perform(auth(delete(shareUrl), member)).andExpect(status().isForbidden());
+
+        // 멤버가 나가면 못 본다
+        mockMvc.perform(auth(delete("/api/groups/" + groupId + "/members/me"), member)).andExpect(status().is2xxSuccessful());
+        mockMvc.perform(auth(get("/api/memos/" + memoId), member)).andExpect(status().isForbidden());
+
+        // 해제 → 204, 다시 해제 → 404
+        mockMvc.perform(auth(delete(shareUrl), owner)).andExpect(status().isNoContent());
+        mockMvc.perform(auth(delete(shareUrl), owner)).andExpect(status().isNotFound());
+
+        // 다시 공유한 뒤 모임을 지우면 공유도 지워지고 메모는 남는다
+        mockMvc.perform(auth(post(shareUrl), owner)).andExpect(status().isOk());
+        mockMvc.perform(auth(delete("/api/groups/" + groupId), owner)).andExpect(status().is2xxSuccessful());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM memo_group_shares WHERE memo_id = ?",
+                Integer.class, UUID.fromString(memoId))).isZero();
+        mockMvc.perform(auth(get("/api/memos/" + memoId), owner)).andExpect(status().isOk());
+    }
+
+    @Test
     @DisplayName("연결 노출·보존: 비공개 메모·일정 제목 숨김, 일정에서 만든 연결은 메모 수정에도 유지, 참여자는 남의 일정에 메모를 못 붙임")
     void links_visibilityAndPreservation() throws Exception {
         Session jiwoo = login("ljiwoo");
