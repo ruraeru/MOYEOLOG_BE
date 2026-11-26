@@ -244,8 +244,9 @@ public class DatePollService {
     // ─── AI ─────────────────────────────────────────────────────────
 
     /** 읽기 트랜잭션에서 꺼낸 추천 입력. 엔티티가 아니라 값이다. */
+    /** names: 멤버 닉네임(LLM 이 이름 속에 넣은 공백을 되돌릴 때 쓴다) */
     record AiInput(String prompt, String sourceHash, List<LocalDate> best, Map<LocalDate, Integer> counts,
-                   int memberCount, int respondedCount) {
+                   int memberCount, int respondedCount, List<String> names) {
     }
 
     private AiInput prepareRecommendation(UUID userId, UUID groupId, UUID pollId) {
@@ -289,7 +290,8 @@ public class DatePollService {
                 + "(e.g. 민지는, not 민지 는). Write dates like 11월 29일 (no space between a number and 월/일/명).\n"
                 + "Return the result STRICTLY as a JSON object: "
                 + "{\"summary\": string, \"recommended\": [{\"date\": string, \"reason\": string}]}.";
-        return new AiInput(prompt, tally.hash(), best(dates), counts, members.size(), tally.responded().size());
+        return new AiInput(prompt, tally.hash(), best(dates), counts, members.size(), tally.responded().size(),
+                members.stream().map(User::getNickname).toList());
     }
 
     private DatePollDetail saveRecommendation(UUID userId, UUID groupId, UUID pollId, AiInput input,
@@ -306,7 +308,7 @@ public class DatePollService {
                 LocalDate date = parseDate(map.get("date"));
                 // 후보 밖 날짜와 가능한 사람이 0명인 날은 버린다(LLM 이 실제로 0명인 날을 추천한 적이 있다).
                 if (date == null || input.counts().getOrDefault(date, 0) == 0 || !seen.add(date)) continue;
-                String reason = clip(tidy(text(map.get("reason"))), 200);
+                String reason = clip(tidy(text(map.get("reason")), input.names()), 200);
                 recommended.add(new Recommendation(date,
                         usable(reason) ? reason : fallbackReason(input, date)));
             }
@@ -314,7 +316,7 @@ public class DatePollService {
         if (recommended.isEmpty()) {
             input.best().forEach(d -> recommended.add(new Recommendation(d, fallbackReason(input, d))));
         }
-        String summary = clip(tidy(text(result.get("summary"))), 600);
+        String summary = clip(tidy(text(result.get("summary")), input.names()), 600);
         if (!usable(summary)) {
             summary = input.memberCount() + "명 중 " + input.respondedCount() + "명이 응답했어요.";
         }
@@ -347,7 +349,34 @@ public class DatePollService {
 
     /** LLM(qwen)이 한국어를 토큰 단위로 띄어 쓰는 것('11 월 29 일', '20b 는')을 붙인다 */
     static String tidy(String text) {
-        String result = NUMBER_UNIT_SPACE.matcher(text).replaceAll("$1$2");
+        return tidy(text, List.of());
+    }
+
+    /**
+     * tidy + 멤버 닉네임 속에 끼어든 공백('큐에이 20a', '큐 에이20a')을 원래 닉네임으로 되돌린다.
+     * 이름을 먼저 붙여야 뒤의 이름·조사 규칙이 '큐에이20a 가' 를 '큐에이20a가' 로 붙인다.
+     * 공백 없는 글자 3개 이상인 닉네임만 고친다(짧은 이름은 '가 나' 처럼 평범한 두 낱말과 헷갈릴 수 있어서).
+     * 줄여 부른 이름('20c')이나 틀리게 쓴 이름은 되돌리지 못한다.
+     */
+    static String tidy(String text, List<String> names) {
+        String result = text;
+        List<String> sorted = names == null ? List.of() : names.stream()
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .sorted(java.util.Comparator.comparingInt(String::length).reversed())
+                .toList();
+        for (String name : sorted) {
+            int[] letters = name.codePoints().filter(c -> !Character.isWhitespace(c)).toArray();
+            if (letters.length < 3) continue;
+            StringBuilder regex = new StringBuilder();
+            for (int i = 0; i < letters.length; i++) {
+                if (i > 0) regex.append("\\s*");
+                regex.append(java.util.regex.Pattern.quote(new String(Character.toChars(letters[i]))));
+            }
+            result = java.util.regex.Pattern.compile(regex.toString()).matcher(result)
+                    .replaceAll(java.util.regex.Matcher.quoteReplacement(name));
+        }
+        result = NUMBER_UNIT_SPACE.matcher(result).replaceAll("$1$2");
         return NAME_PARTICLE_SPACE.matcher(result).replaceAll("$1$2");
     }
 
