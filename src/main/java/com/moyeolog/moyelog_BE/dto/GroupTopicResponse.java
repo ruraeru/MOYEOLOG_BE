@@ -28,4 +28,6 @@ public class GroupTopicResponse {
     private LocalDateTime pinnedAt;
     /** 보는 사람이 고정·해제할 수 있는가 (작성자 또는 방장) */
     private boolean canPin;
+    /** 보는 사람이 지울 수 있는가 (작성자 또는 방장) */
+    private boolean canDelete;
 }

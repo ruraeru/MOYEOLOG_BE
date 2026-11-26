@@ -46,9 +46,11 @@ import java.util.stream.Collectors;
  * - 읽기: 작성자, 공유받은 사람, (모임 메모) 현재 모임 멤버, (모임에 공유한 개인 메모) 그 모임의 현재 멤버
  * - 수정·태그: 개인 메모는 작성자, 모임 메모는 현재 모임 멤버 (나간·강퇴된 작성자는 수정 불가),
  *   그리고 '수정 가능'으로 공유받은 친구. 친구 공유는 기본 읽기 전용, 모임에 공유한 개인 메모는 늘 읽기 전용.
- * - 삭제·공유·공유 해제·분석: 작성자
- * - 고정: 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장(memos.pinned_at, 모임 전체에 고정),
- *   개인 메모는 읽을 수 있는 사람 누구나(memo_pins, 사용자별. 고정한 본인에게만 보인다)
+ * - 삭제: 작성자, 그리고 모임 메모는 그 모임의 방장 (모임에 공유된 개인 메모는 작성자만)
+ * - 공유·공유 해제·분석: 작성자
+ * - 내 고정: 모든 메모, 읽을 수 있는 사람 누구나(memo_pins, 사용자별. 고정한 본인에게만 보인다)
+ * - 모임 고정: 모임 메모만, 그 모임의 현재 멤버 중 작성자 또는 방장(memos.pinned_at, 멤버 모두에게 보인다).
+ *   두 고정은 서로 영향이 없다.
  * - 즐겨찾기: 읽을 수 있는 사람 누구나, 사용자별 (모임 메모 포함. 모임 화면에서는 별을 숨기고 고정을 쓴다)
  */
 @Service
@@ -287,7 +289,11 @@ public class MemoService {
     public void deleteMemo(UUID userId, UUID memoId) {
         // 동시 삭제는 행 잠금으로 줄 세운다: 먼저 지운 쪽만 성공하고 나머지는 404.
         Memo memo = findMemoForUpdate(memoId);
-        validateAuthor(memo, userId);
+        if (!canDelete(memo, userId)) {
+            throw new UnauthorizedAccessException(memo.getGroupId() != null
+                    ? "모임 메모는 작성자나 방장만 삭제할 수 있어요."
+                    : "메모 작성자만 할 수 있어요.");
+        }
         ChangeEvents audience = audience(memo);
         deleteMemoInternal(memo);
         ConcurrentUpdates.flush(memoRepository::flush);
@@ -391,8 +397,8 @@ public class MemoService {
         Set<UUID> favoriteIds = favoriteMemoIds(userId);
         Map<UUID, LocalDateTime> pins = pinnedAts(userId);
         List<Memo> memos = new ArrayList<>(memoRepository.findByGroupIdOrderByCreatedAtDesc(groupId));
-        // 모임 고정(공지)을 맨 위로. 공유된 개인 메모는 모임 고정 대상이 아니라 그 뒤에 그대로 둔다.
-        memos.sort(pinnedFirst(pins));
+        // 모임 고정(공지)을 맨 위로. 내 고정은 여기 정렬에 쓰지 않는다. 공유된 개인 메모는 모임 고정 대상이 아니라 그 뒤에 그대로 둔다.
+        memos.sort(Comparator.comparing(Memo::getPinnedAt, Comparator.nullsLast(Comparator.reverseOrder())));
         memos.addAll(memoGroupShareRepository.findMemosByGroupId(groupId));
         return memos.stream()
                 .map(memo -> convertToResponse(memo, viewer, favoriteIds, pins))
@@ -459,7 +465,7 @@ public class MemoService {
     }
 
     /**
-     * 고정·해제. 모임 메모는 그 모임의 현재 멤버 중 작성자 또는 방장(모임 전체), 개인 메모는 읽을 수 있는 사람 누구나(본인에게만).
+     * 내 고정·해제. 모든 메모(모임 메모 포함), 읽을 수 있는 사람 누구나. 고정한 본인에게만 보인다(memo_pins).
      * 이미 고정된 메모를 다시 고정하면 처음 고정한 시각을 둔다. 수정 시각·version·마지막 수정자는 바꾸지 않는다.
      */
     @Transactional
@@ -467,23 +473,35 @@ public class MemoService {
         Memo memo = findMemoForUpdate(memoId);
         User user = findUserById(userId);
         Viewer viewer = viewer(user);
-        if (!canPin(memo, viewer)) {
-            throw new UnauthorizedAccessException(memo.getGroupId() != null
-                    ? "모임 메모는 방장이나 작성자만 고정할 수 있어요."
-                    : NO_READ_PERMISSION);
+        if (!canRead(memo, viewer)) {
+            throw new UnauthorizedAccessException(NO_READ_PERMISSION);
         }
+        // 메모 행을 잠갔으므로 확인과 저장 사이에 같은 고정이 끼어들지 않는다.
+        boolean pinned = memoPinRepository.existsByUser_IdAndMemo_Id(userId, memoId);
+        if (pin && !pinned) {
+            memoPinRepository.save(MemoPin.builder().user(user).memo(memo).build());
+            ConcurrentUpdates.flush(memoPinRepository::flush);
+        } else if (!pin && pinned) {
+            memoPinRepository.deleteByUserIdAndMemoId(userId, memoId);
+        }
+        // 내 고정은 나에게만 보인다(다른 탭·기기 반영)
+        eventPublisher.publishEvent(ChangeEvent.of(Set.of(userId), LiveTopics.MEMOS));
+        return convertToResponse(memo, viewer, null);
+    }
+
+    /**
+     * 모임 고정·해제. 모임 메모만(개인 메모면 400), 그 모임의 현재 멤버 중 작성자 또는 방장. 멤버 모두에게 보인다(memos.pinned_at).
+     * 이미 고정된 메모를 다시 고정하면 처음 고정한 시각을 둔다. 수정 시각·version·마지막 수정자는 바꾸지 않는다.
+     */
+    @Transactional
+    public MemoResponse groupPinMemo(UUID userId, UUID memoId, boolean pin) {
+        Memo memo = findMemoForUpdate(memoId);
         if (memo.getGroupId() == null) {
-            // 메모 행을 잠갔으므로 확인과 저장 사이에 같은 고정이 끼어들지 않는다.
-            boolean pinned = memoPinRepository.existsByUser_IdAndMemo_Id(userId, memoId);
-            if (pin && !pinned) {
-                memoPinRepository.save(MemoPin.builder().user(user).memo(memo).build());
-                ConcurrentUpdates.flush(memoPinRepository::flush);
-            } else if (!pin && pinned) {
-                memoPinRepository.deleteByUserIdAndMemoId(userId, memoId);
-            }
-            // 개인 고정은 나에게만 보인다(다른 탭·기기 반영)
-            eventPublisher.publishEvent(ChangeEvent.of(Set.of(userId), LiveTopics.MEMOS));
-            return convertToResponse(memo, viewer, null);
+            throw new BadRequestException("모임에서 쓴 메모만 모임에 고정할 수 있어요.");
+        }
+        Viewer viewer = viewer(findUserById(userId));
+        if (!canGroupPin(memo, viewer)) {
+            throw new UnauthorizedAccessException("모임 메모는 방장이나 작성자만 고정할 수 있어요.");
         }
         if (pin != (memo.getPinnedAt() != null)) {
             memoRepository.updatePinnedAt(memoId, pin ? LocalDateTime.now() : null);
@@ -609,37 +627,40 @@ public class MemoService {
         return byRole || memoShareRepository.existsByMemo_IdAndSharedTo_IdAndCanEditTrue(memo.getId(), viewer.id());
     }
 
-    /** 고정 권한: 모임 메모는 현재 모임 멤버이면서 작성자 또는 방장, 개인 메모는 읽을 수 있는 사람 누구나(자기 고정). */
-    private boolean canPin(Memo memo, Viewer viewer) {
-        if (memo.getGroupId() == null) {
-            return canRead(memo, viewer);
-        }
+    /** 모임 고정 권한: 모임 메모만, 그 모임의 현재 멤버이면서 작성자 또는 방장. */
+    private boolean canGroupPin(Memo memo, Viewer viewer) {
         if (!viewer.isMemberOf(memo.getGroupId())) {
             return false;
         }
-        return memo.getAuthor().getId().equals(viewer.id()) || groupRepository.findById(memo.getGroupId())
-                .map(group -> group.getCreatedBy().getId().equals(viewer.id()))
+        return memo.getAuthor().getId().equals(viewer.id()) || isGroupOwner(memo, viewer.id());
+    }
+
+    /** 삭제 권한: 작성자, 또는 모임 메모이면 그 모임의 방장. 모임에 공유된 개인 메모는 작성자만. */
+    private boolean canDelete(Memo memo, UUID userId) {
+        return memo.getAuthor().getId().equals(userId) || isGroupOwner(memo, userId);
+    }
+
+    /** 모임 메모이고 userId 가 그 모임의 방장인가. 방장은 모임을 나갈 수 없으므로 늘 현재 멤버다. */
+    private boolean isGroupOwner(Memo memo, UUID userId) {
+        return memo.getGroupId() != null && groupRepository.findById(memo.getGroupId())
+                .map(group -> group.getCreatedBy().getId().equals(userId))
                 .orElse(false);
     }
 
     /**
-     * 이 사람에게 보이는 고정 시각: 모임 메모는 모임 공통(memos.pinned_at), 개인 메모는 보는 사람 본인의 memo_pins.
+     * 보는 사람 본인의 내 고정 시각(memo_pins). 모임 메모도 같다(모임 고정은 groupPinnedAt).
      * @param pins 미리 읽어 둔 보는 사람의 고정(memoId → 시각). null 이면 이 메모에 대해 개별 조회한다.
      */
     private LocalDateTime pinnedAtFor(Memo memo, Viewer viewer, Map<UUID, LocalDateTime> pins) {
-        if (memo.getGroupId() != null || pins != null) {
-            return pinnedAtIn(memo, pins);
+        if (pins != null) {
+            return pins.get(memo.getId());
         }
         return memoPinRepository.findFirstByUser_IdAndMemo_Id(viewer.id(), memo.getId())
                 .map(MemoPin::getPinnedAt)
                 .orElse(null);
     }
 
-    private static LocalDateTime pinnedAtIn(Memo memo, Map<UUID, LocalDateTime> pins) {
-        return memo.getGroupId() != null ? memo.getPinnedAt() : pins.get(memo.getId());
-    }
-
-    /** 보는 사람의 개인 고정 전부를 한 번에 읽는다 (목록의 N+1 방지). */
+    /** 보는 사람의 내 고정 전부를 한 번에 읽는다 (목록의 N+1 방지). */
     private Map<UUID, LocalDateTime> pinnedAts(UUID userId) {
         Map<UUID, LocalDateTime> pins = new HashMap<>();
         for (MemoPin pin : memoPinRepository.findAllByUser_Id(userId)) {
@@ -648,9 +669,9 @@ public class MemoService {
         return pins;
     }
 
-    /** 고정된 것 먼저(고정 시각 최신순), 나머지는 원래 순서 그대로(정렬이 안정적이다). */
+    /** 내 고정 먼저(고정 시각 최신순), 나머지는 원래 순서 그대로(정렬이 안정적이다). */
     private static Comparator<Memo> pinnedFirst(Map<UUID, LocalDateTime> pins) {
-        return Comparator.comparing((Memo memo) -> pinnedAtIn(memo, pins),
+        return Comparator.comparing((Memo memo) -> pins.get(memo.getId()),
                 Comparator.nullsLast(Comparator.reverseOrder()));
     }
 
@@ -887,8 +908,8 @@ public class MemoService {
     }
 
     /**
-     * 작성자: 모두 true(모임을 나간 작성자는 수정·태그 false). 모임 멤버: 수정·태그.
-     * 공유받은 사람: '수정 가능'이면 수정·태그, 아니면 모두 false. 공유한 모임의 멤버: 모두 false.
+     * 작성자: 모두 true(모임을 나간 작성자는 수정·태그·모임 고정 false). 모임 멤버: 수정·태그, 방장은 삭제·모임 고정도.
+     * 공유받은 사람: '수정 가능'이면 수정·태그. 공유한 모임의 멤버: 내 고정만. 읽을 수 있으면 누구나 내 고정.
      */
     private MemoResponse.Permissions permissionsOf(Memo memo, Viewer viewer) {
         boolean isAuthor = memo.getAuthor().getId().equals(viewer.id());
@@ -896,10 +917,11 @@ public class MemoService {
         return MemoResponse.Permissions.builder()
                 .edit(edit)
                 .tag(edit)
-                .delete(isAuthor)
+                .delete(canDelete(memo, viewer.id()))
                 .share(isAuthor)
                 .analyze(isAuthor)
-                .pin(canPin(memo, viewer))
+                .pin(canRead(memo, viewer))
+                .groupPin(memo.getGroupId() != null && canGroupPin(memo, viewer))
                 .build();
     }
 
@@ -910,7 +932,7 @@ public class MemoService {
     /**
      * @param viewer      응답을 받는 사용자 (isFavorite, pinnedAt, sharedWith, permissions, 연결 목록은 이 사용자 기준)
      * @param favoriteIds 미리 조회해 둔 viewer 의 즐겨찾기 메모 ID 목록. null 이면 이 메모에 대해 개별 조회합니다.
-     * @param pins        미리 조회해 둔 viewer 의 개인 고정(memoId → 시각). null 이면 이 메모에 대해 개별 조회합니다.
+     * @param pins        미리 조회해 둔 viewer 의 내 고정(memoId → 시각). null 이면 이 메모에 대해 개별 조회합니다.
      */
     private MemoResponse convertToResponse(Memo memo, Viewer viewer, Set<UUID> favoriteIds, Map<UUID, LocalDateTime> pins) {
         UUID viewerId = viewer.id();
@@ -982,6 +1004,7 @@ public class MemoService {
                 .updatedAt(memo.getUpdatedAt())
                 .version(memo.getVersion() != null ? memo.getVersion() : 0L)
                 .pinnedAt(pinnedAtFor(memo, viewer, pins))
+                .groupPinnedAt(memo.getGroupId() != null ? memo.getPinnedAt() : null)
                 .permissions(permissionsOf(memo, viewer))
                 .build();
     }

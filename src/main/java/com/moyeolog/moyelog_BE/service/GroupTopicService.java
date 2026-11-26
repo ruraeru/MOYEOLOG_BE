@@ -147,18 +147,20 @@ public class GroupTopicService {
         return convertToResponse(topic, userId);
     }
 
-    /** 고정 권한: 작성자 또는 방장 (모임 멤버인지는 따로 확인한다) */
+    /** 고정·삭제 권한: 작성자 또는 방장 (고정은 모임 멤버인지 따로 확인한다) */
     private static boolean canPin(GroupTopic topic, UUID userId) {
         return topic.getAuthor().getId().equals(userId)
                 || topic.getGroup().getCreatedBy().getId().equals(userId);
     }
 
-    /** 삭제는 작성자 본인만 (모임을 나간 뒤에도 자기 글 정리는 허용). 동시 삭제는 두 번째가 404. */
+    /** 삭제는 작성자 또는 방장 (작성자는 모임을 나간 뒤에도 자기 글 정리는 허용). 동시 삭제는 두 번째가 404. */
     @Transactional
     public void deleteTopic(UUID userId, UUID topicId) {
         GroupTopic topic = groupTopicRepository.findByIdForUpdate(topicId)
                 .orElseThrow(() -> GroupErrors.notFound(TOPIC_NOT_FOUND));
-        validateAuthor(topic, userId);
+        if (!canPin(topic, userId)) {
+            throw new UnauthorizedAccessException("방장이나 작성자만 지울 수 있어요.");
+        }
         String imageUrl = topic.getImageUrl();
         UUID groupId = topic.getGroup().getId();
         groupTopicRepository.delete(topic);
@@ -408,7 +410,7 @@ public class GroupTopicService {
         }
     }
 
-    /** 목록·상세 응답. 예전 data URL 이미지는 변환 전까지 내보내지 않는다(응답 크기). canPin 은 viewerId 기준. */
+    /** 목록·상세 응답. 예전 data URL 이미지는 변환 전까지 내보내지 않는다(응답 크기). canPin·canDelete 는 viewerId 기준. */
     private GroupTopicResponse convertToResponse(GroupTopic topic, UUID viewerId) {
         long commentCount = groupTopicCommentRepository.countByTopic(topic);
         String imageUrl = topic.getImageUrl();
@@ -427,6 +429,7 @@ public class GroupTopicService {
                 .updatedAt(topic.getUpdatedAt())
                 .pinnedAt(topic.getPinnedAt())
                 .canPin(canPin(topic, viewerId))
+                .canDelete(canPin(topic, viewerId))
                 .build();
     }
 

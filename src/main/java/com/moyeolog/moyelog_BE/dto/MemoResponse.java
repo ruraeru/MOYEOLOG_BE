@@ -31,7 +31,8 @@ public class MemoResponse {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private Long version; // 수정 요청에 그대로 돌려보내면 낙관적 잠금
-    private LocalDateTime pinnedAt; // 고정한 시각(없으면 null). 모임 메모는 모임 공통, 개인 메모는 보는 사람 본인의 고정
+    private LocalDateTime pinnedAt; // 보는 사람 본인의 내 고정 시각(없으면 null). 모든 메모
+    private LocalDateTime groupPinnedAt; // 모임 고정 시각(모임 메모만, 없으면 null). 멤버 모두에게 같은 값
     private Permissions permissions; // 요청한 사용자 기준
 
     @Getter
@@ -45,7 +46,8 @@ public class MemoResponse {
         private boolean share;
         private boolean tag;
         private boolean analyze;
-        private boolean pin; // 고정·해제 (모임 메모: 작성자·방장, 개인 메모: 작성자)
+        private boolean pin; // 내 고정·해제 (읽을 수 있으면 누구나, 모든 메모)
+        private boolean groupPin; // 모임 고정·해제 (모임 메모만, 그 모임의 방장·작성자)
     }
 
     @Getter

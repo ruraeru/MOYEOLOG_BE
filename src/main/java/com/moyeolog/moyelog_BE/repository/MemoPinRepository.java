@@ -51,4 +51,24 @@ public interface MemoPinRepository extends JpaRepository<MemoPin, UUID> {
             "AND p.memo.id NOT IN (SELECT s2.memo.id FROM MemoGroupShare s2, GroupMember gm " +
             "WHERE gm.group.id = s2.groupId AND gm.user.id = :userId AND s2.groupId <> :groupId)")
     int deleteByUserIdAndGroupSharedMemos(@Param("userId") UUID userId, @Param("groupId") UUID groupId);
+
+    /**
+     * userId 가 groupId 모임의 모임 메모(memos.group_id)에 한 내 고정을 지운다(모임을 나가거나 내보내질 때).
+     * 자기가 쓴 메모와 친구 공유로 여전히 읽을 수 있는 메모의 고정은 남긴다.
+     */
+    @Modifying
+    @Query("DELETE FROM MemoPin p WHERE p.user.id = :userId " +
+            "AND p.memo.id IN (SELECT m.id FROM Memo m WHERE m.groupId = :groupId AND m.author.id <> :userId) " +
+            "AND p.memo.id NOT IN (SELECT ms.memo.id FROM MemoShare ms WHERE ms.sharedTo.id = :userId)")
+    int deleteByUserIdAndGroupMemos(@Param("userId") UUID userId, @Param("groupId") UUID groupId);
+
+    /**
+     * groupId 모임의 모임 메모에 대한 고정 중 작성자 본인 것이 아닌 것을 지운다(모임 삭제로 메모가 개인 메모로 돌아가기 전에).
+     * 친구 공유로 여전히 읽을 수 있는 사람의 고정은 남긴다.
+     */
+    @Modifying
+    @Query("DELETE FROM MemoPin p WHERE p.memo.id IN " +
+            "(SELECT m.id FROM Memo m WHERE m.groupId = :groupId AND m.author.id <> p.user.id) " +
+            "AND p.memo.id NOT IN (SELECT ms.memo.id FROM MemoShare ms WHERE ms.sharedTo.id = p.user.id)")
+    int deleteNonAuthorPinsByGroupId(@Param("groupId") UUID groupId);
 }
