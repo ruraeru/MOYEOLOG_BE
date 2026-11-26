@@ -190,9 +190,9 @@ class EmailAccountIntegrationTest {
 
         // 메일만 연 사람(비밀번호 모름)은 확정할 수 없다
         verifyToken(token, null, null).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(AccountService.WRONG_PASSWORD_MESSAGE));
+                .andExpect(jsonPath("$.message").value(AccountService.wrongPasswordMessage(4)));
         verifyToken(token, "wrong-password", null).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(AccountService.WRONG_PASSWORD_MESSAGE));
+                .andExpect(jsonPath("$.message").value(AccountService.wrongPasswordMessage(3)));
         assertThat(userCount(lower)).isZero();
 
         verifyToken(token, PASSWORD, null)
@@ -208,23 +208,57 @@ class EmailAccountIntegrationTest {
         assertThat(passwordEncoder.matches(PASSWORD, (String) row.get("password_hash"))).isTrue();
 
         verifyToken(token, PASSWORD, null).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(AccountService.USED_TOKEN_MESSAGE));
+        verifyToken("x".repeat(43), PASSWORD, null).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(AccountService.INVALID_TOKEN_MESSAGE));
-        verifyToken("x".repeat(43), PASSWORD, null).andExpect(status().isBadRequest());
     }
 
     @Test
     @DisplayName("가입: 한 토큰에 비밀번호를 5번 틀리면 그 토큰은 맞는 비밀번호로도 못 쓴다")
     void signup_verify_lockedAfterFiveWrongPasswords() throws Exception {
         String addr = email("guess");
-        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "a"))
+        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "에이"))
                 .andExpect(status().isAccepted());
         String token = tokenIn(mails(1).getFirst());
         for (int i = 0; i < 5; i++) {
             verifyToken(token, "wrong-pass-" + i, null).andExpect(status().isBadRequest());
         }
         verifyToken(token, PASSWORD, null).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(AccountService.INVALID_TOKEN_MESSAGE));
+                .andExpect(jsonPath("$.message").value(AccountService.LOCKED_TOKEN_MESSAGE));
+        postJson("/api/account/verify/preview", Map.of("token", token)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(AccountService.LOCKED_TOKEN_MESSAGE));
         assertThat(userCount(addr)).isZero();
+    }
+
+    @Test
+    @DisplayName("가입 링크 미리 보기: 쓰지 않고 purpose·email 만 준다. 확정 뒤에는 '이미 사용한 링크', 없는 토큰은 기본 문구")
+    void verifyPreview() throws Exception {
+        String addr = email("preview");
+        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "미리보기"))
+                .andExpect(status().isAccepted());
+        String token = tokenIn(mails(1).getFirst());
+        postJson("/api/account/verify/preview", Map.of("token", token)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.purpose").value("SIGNUP"))
+                .andExpect(jsonPath("$.email").value(addr));
+        assertThat(userCount(addr)).isZero();
+        verifyToken(token, PASSWORD, null).andExpect(status().isOk());
+        postJson("/api/account/verify/preview", Map.of("token", token)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(AccountService.USED_TOKEN_MESSAGE));
+        postJson("/api/account/verify/preview", Map.of("token", "x".repeat(43))).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(AccountService.INVALID_TOKEN_MESSAGE));
+    }
+
+    @Test
+    @DisplayName("가입: 닉네임은 프로필과 같은 2~20자(자르지 않고 400), 공백만인 비밀번호는 400")
+    void signup_nicknameLength_and_blankPassword() throws Exception {
+        postJson("/api/account/signup", Map.of("email", email("n1"), "password", PASSWORD, "nickname", "가"))
+                .andExpect(status().isBadRequest());
+        postJson("/api/account/signup", Map.of("email", email("n30"), "password", PASSWORD, "nickname", "가".repeat(21)))
+                .andExpect(status().isBadRequest());
+        postJson("/api/account/signup", Map.of("email", email("blank"), "password", "        ", "nickname", "공백"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("공백만으로는 비밀번호를 만들 수 없어요."));
+        noMoreMailsThan(0);
     }
 
     @Test
@@ -296,21 +330,21 @@ class EmailAccountIntegrationTest {
     @Test
     @DisplayName("가입: 형식 오류만 400 (이메일·8자 미만·72바이트 초과·빈 닉네임), 같은 이메일 1분 안 두 번째 요청은 202 지만 메일 없음")
     void signup_validation_andRateLimit() throws Exception {
-        postJson("/api/account/signup", Map.of("email", "not-an-email", "password", PASSWORD, "nickname", "a"))
+        postJson("/api/account/signup", Map.of("email", "not-an-email", "password", PASSWORD, "nickname", "에이"))
                 .andExpect(status().isBadRequest());
-        postJson("/api/account/signup", Map.of("email", email("v"), "password", "short", "nickname", "a"))
+        postJson("/api/account/signup", Map.of("email", email("v"), "password", "short", "nickname", "에이"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("비밀번호는 8자 이상이어야 해요."));
-        postJson("/api/account/signup", Map.of("email", email("v"), "password", "가".repeat(25), "nickname", "a"))
+        postJson("/api/account/signup", Map.of("email", email("v"), "password", "가".repeat(25), "nickname", "에이"))
                 .andExpect(status().isBadRequest()); // 75바이트
         postJson("/api/account/signup", Map.of("email", email("v"), "password", PASSWORD, "nickname", "\u200B "))
                 .andExpect(status().isBadRequest());
         noMoreMailsThan(0);
 
         String addr = email("rate");
-        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "a"))
+        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "에이"))
                 .andExpect(status().isAccepted());
-        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "a"))
+        postJson("/api/account/signup", Map.of("email", addr, "password", PASSWORD, "nickname", "에이"))
                 .andExpect(status().isAccepted());
         mails(1);
         noMoreMailsThan(1);
