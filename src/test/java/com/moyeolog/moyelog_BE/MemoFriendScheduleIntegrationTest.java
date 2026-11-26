@@ -483,6 +483,20 @@ class MemoFriendScheduleIntegrationTest {
         assertThat(scheduleOf(jiwoo, rehearsal).path("taggedMemos").size()).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("연결된 일정: 시작 시각을 주고 이른 일정부터 준다")
+    void links_scheduleSummaryHasStartTimeSorted() throws Exception {
+        Session jiwoo = login("ljiwoo");
+        String later = createSchedule(jiwoo, Map.of("title", "늦은 일정", "startTime", "2026-12-03T10:00:00", "endTime", "2026-12-03T11:00:00"));
+        String earlier = createSchedule(jiwoo, Map.of("title", "이른 일정", "startTime", "2026-12-02T09:30:00", "endTime", "2026-12-02T10:00:00"));
+        String memoId = createMemo(jiwoo, Map.of("title", "연결", "content", "c",
+                "taggedScheduleIds", List.of(later, earlier))).path("id").asText();
+        mockMvc.perform(auth(get("/api/memos/" + memoId), jiwoo))
+                .andExpect(jsonPath("$.taggedSchedules[0].id").value(earlier))
+                .andExpect(jsonPath("$.taggedSchedules[0].startTime").value("2026-12-02T09:30:00"))
+                .andExpect(jsonPath("$.taggedSchedules[1].id").value(later));
+    }
+
     // ─── 일정 ───────────────────────────────────────────────────────
 
     @Test

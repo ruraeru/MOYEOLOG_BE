@@ -956,9 +956,11 @@ public class MemoService {
 
         List<MemoResponse.ScheduleSummaryResponse> scheduleSummaries = scheduleRepository.findByTaggedMemosContains(memo).stream()
                 .filter(s -> canSeeSchedule(s, viewer))
+                .sorted(java.util.Comparator.comparing(Schedule::getStartTime, java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())))
                 .map(s -> MemoResponse.ScheduleSummaryResponse.builder()
                     .id(s.getId())
                     .title(s.getTitle())
+                    .startTime(s.getStartTime())
                     .build())
                 .collect(Collectors.toList());
 
