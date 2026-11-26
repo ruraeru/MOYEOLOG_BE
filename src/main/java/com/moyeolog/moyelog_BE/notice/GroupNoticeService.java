@@ -53,7 +53,7 @@ public class GroupNoticeService {
                     noticeUser(notice.getAuthor()), notice.getCreatedAt(), notice.getUpdatedAt(), notice.getPinnedAt(),
                     read.size(), members.size(), read.contains(userId),
                     poll != null, poll != null && poll.closed(), poll != null && poll.myVoted(),
-                    canManage);
+                    canManage, poll == null ? null : poll.response().closesAt());
         }).toList();
     }
 
@@ -77,7 +77,7 @@ public class GroupNoticeService {
         noticeRepository.flush();
 
         List<User> members = access.members(groupId);
-        access.notify(members, userId, groupId, nickname(members, userId) + "님이 공지 '" + shortTitle(notice)
+        access.notify(members, userId, groupId, notice.getId(), nickname(members, userId) + "님이 공지 '" + shortTitle(notice)
                 + "'을(를) 올렸어요." + (request.poll() != null ? " 투표에 참여해 주세요." : ""));
         access.publishChange(groupId, members);
         return detail(group, notice, members, userId);

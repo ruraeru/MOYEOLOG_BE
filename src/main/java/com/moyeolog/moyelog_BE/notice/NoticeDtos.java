@@ -64,13 +64,14 @@ public final class NoticeDtos {
 
     /**
      * preview: 내용 앞 100자(마크다운 기호 제거). read: 보는 사람이 읽었나. canManage: 보는 사람이 방장.
-     * hasPoll·pollClosed·myVoted: 투표가 없으면 모두 false.
+     * hasPoll·pollClosed·myVoted: 투표가 없으면 모두 false. pollClosesAt: 투표 마감 시각(없으면 null) —
+     * 목록이 그 시각에 '투표 마감'으로 바뀌도록 화면이 다시 부른다.
      */
     public record NoticeSummary(UUID id, String title, String preview, NoticeUser author,
                                 LocalDateTime createdAt, LocalDateTime updatedAt, LocalDateTime pinnedAt,
                                 int readCount, int memberCount, boolean read,
                                 boolean hasPoll, boolean pollClosed, boolean myVoted,
-                                boolean canManage) {
+                                boolean canManage, LocalDateTime pollClosesAt) {
     }
 
     /** NoticeSummary 의 필드 + 상세. poll 은 투표가 없으면 null */
