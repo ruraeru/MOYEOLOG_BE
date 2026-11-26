@@ -247,6 +247,48 @@ class GroupTopicServiceTest {
     }
 
     @Test
+    @DisplayName("삭제: 모임 밖 사람(작성자·방장 아님)은 '멤버가 아니에요', 멤버는 '방장이나 작성자만'")
+    void deleteTopic_NonMemberMessage() {
+        User author = User.builder().id(UUID.randomUUID()).nickname("author").build();
+        GroupTopic topic = GroupTopic.builder().id(UUID.randomUUID()).title("t").content("c").author(author).group(group).build();
+        given(groupTopicRepository.findByIdForUpdate(topic.getId())).willReturn(Optional.of(topic));
+
+        assertThatThrownBy(() -> groupTopicService.deleteTopic(userId, topic.getId()))
+                .isInstanceOf(UnauthorizedAccessException.class)
+                .hasMessage(GroupErrors.NOT_MEMBER);
+
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        assertThatThrownBy(() -> groupTopicService.deleteTopic(userId, topic.getId()))
+                .isInstanceOf(UnauthorizedAccessException.class)
+                .hasMessage("방장이나 작성자만 지울 수 있어요.");
+        verify(groupTopicRepository, org.mockito.Mockito.never()).delete(any(GroupTopic.class));
+    }
+
+    @Test
+    @DisplayName("댓글 멘션: 멘션한 모임 멤버에게 TOPIC_COMMENT 알림, 멤버 아닌 사람·나 자신에게는 없음")
+    void createComment_MentionNotification() {
+        GroupTopic mine = ownTopic();
+        UUID memberId = UUID.randomUUID();
+        UUID outsiderId = UUID.randomUUID();
+        given(groupTopicRepository.findById(mine.getId())).willReturn(Optional.of(mine));
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, userId)).willReturn(true);
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, memberId)).willReturn(true);
+        given(groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, outsiderId)).willReturn(false);
+        given(userRepository.findById(userId)).willReturn(Optional.of(user));
+        given(groupTopicCommentRepository.save(any())).willAnswer(inv -> inv.getArgument(0));
+
+        String content = "[@멤버](/profile/" + memberId + ") [@밖](/profile/" + outsiderId + ") [@나](/profile/" + userId
+                + ") 다시 [@멤버](/profile/" + memberId + ")";
+        groupTopicService.createComment(userId, mine.getId(), new com.moyeolog.moyelog_BE.dto.GroupTopicCommentRequest(content));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(com.moyeolog.moyelog_BE.event.NotificationEvent.class);
+        verify(eventPublisher, org.mockito.Mockito.times(1)).publishEvent(captor.capture());
+        assertThat(captor.getValue().recipientId()).isEqualTo(memberId);
+        assertThat(captor.getValue().type()).isEqualTo(com.moyeolog.moyelog_BE.event.NotificationType.TOPIC_COMMENT);
+        assertThat(captor.getValue().message()).contains("언급했어요");
+    }
+
+    @Test
     @DisplayName("다른 사람 토픽에 댓글을 달면 토픽 작성자에게 TOPIC_COMMENT 알림, 내 토픽이면 알림 없음")
     void createComment_Notification() {
         User topicAuthor = User.builder().id(UUID.randomUUID()).nickname("작성자").build();
