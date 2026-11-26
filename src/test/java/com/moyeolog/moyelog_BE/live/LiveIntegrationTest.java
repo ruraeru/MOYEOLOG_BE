@@ -146,13 +146,14 @@ class LiveIntegrationTest {
                 .andExpect(status().isOk());
         assertThat(waitFor(() -> changedCount(sb) > before, WAIT_MS)).isTrue();
 
-        // 이제 B 는 상관없다 → 삭제는 A 만 받는다
-        int afterRemoval = changedCount(sb);
+        // 이제 B 는 상관없다 → 일정 토픽은 A 만 받는다.
+        // B 는 지운 일정을 가리키던 '참여자 추가' 알림이 지워져 notifications 만 받을 수 있다(q15 알림 정리).
+        int bodyBefore = sb.body().length();
         int aBefore = changedCount(sa);
         mockMvc.perform(auth(delete("/api/schedules/" + id), a)).andExpect(status().is2xxSuccessful());
         assertThat(waitFor(() -> changedCount(sa) > aBefore, WAIT_MS)).isTrue();
         Thread.sleep(QUIET_MS);
-        assertThat(changedCount(sb)).isEqualTo(afterRemoval);
+        assertThat(sb.body().substring(bodyBefore)).doesNotContain("schedule");
         assertThat(sc.body()).doesNotContain("event:changed");
     }
 
@@ -328,7 +329,8 @@ class LiveIntegrationTest {
         mockMvc.perform(jsonBody(auth(post("/api/memos/" + memoId + "/share"), owner), Map.of("friendIds", List.of(friend.userId()))))
                 .andExpect(status().is2xxSuccessful());
         assertReceives(sf, data("memos"));
-        assertReceives(so, data("memos", "group:" + groupId));
+        // LiveAudience.addMemo 는 group:{id} 를 먼저, memos 를 나중에 담는다(합치기 전 main 에서도 순서 때문에 실패하던 기대값)
+        assertReceives(so, data("group:" + groupId, "memos"));
 
         mockMvc.perform(jsonBody(auth(put("/api/memos/" + memoId + "/tags"), owner), Map.of("tags", List.of("태그"))))
                 .andExpect(status().is2xxSuccessful());

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -278,8 +279,9 @@ class NotificationIntegrationTest {
         Session author = login(mockMvc, "공유한이");
         Session friend = login(mockMvc, "공유받은이");
         makeFriends(mockMvc, author, friend);
-        String memoId = json(mockMvc.perform(jsonBody(auth(post("/api/memos"), author),
-                        Map.of("title", "여행", "content", "c")))
+        // 메모 만들기는 multipart('memo' 파트)만 받는다
+        String memoId = json(mockMvc.perform(auth(multipart("/api/memos").file(new MockMultipartFile("memo", "",
+                        "application/json", MAPPER.writeValueAsBytes(Map.of("title", "여행", "content", "c")))), author))
                 .andExpect(status().is2xxSuccessful()).andReturn()).path("id").asText();
         String shareUrl = "/api/memos/" + memoId + "/share";
 
