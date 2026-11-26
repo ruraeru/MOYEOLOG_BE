@@ -540,7 +540,7 @@ class MemoFriendScheduleIntegrationTest {
     }
 
     @Test
-    @DisplayName("고정: 모임 메모·토픽은 작성자·방장만 고정하고 모두에게 맨 위, 개인 메모는 작성자만, 모임 메모 즐겨찾기 400, 고정은 version·수정 시각을 안 바꾼다")
+    @DisplayName("고정: 모임 메모·토픽은 작성자·방장만 고정하고 모두에게 맨 위, 개인 메모는 작성자만, 모임 메모도 즐겨찾기 가능, 고정은 version·수정 시각을 안 바꾼다")
     void pin_groupAndPersonal() throws Exception {
         Session owner = login("pinowner");
         Session writer = login("pinwriter");
@@ -583,8 +583,10 @@ class MemoFriendScheduleIntegrationTest {
         mockMvc.perform(auth(delete("/api/memos/" + olderId + "/pin"), owner)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.pinnedAt").isEmpty());
 
-        // 모임 메모 즐겨찾기 추가는 400
-        mockMvc.perform(auth(put("/api/memos/" + newerId + "/favorite"), other)).andExpect(status().isBadRequest());
+        // 모임 메모도 멤버는 즐겨찾기할 수 있고, 즐겨찾기 목록에 보인다
+        mockMvc.perform(auth(put("/api/memos/" + newerId + "/favorite"), other)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.isFavorite").value(true));
+        mockMvc.perform(auth(get("/api/memos/favorites"), other)).andExpect(jsonPath("$[0].id").value(newerId));
 
         // 개인 메모: 작성자만 고정, 공유받은 사람에게는 고정이 안 보이고 고정할 수 없다(즐겨찾기는 된다)
         String personalId = createMemo(writer, Map.of("title", "내 메모", "content", "c")).path("id").asText();

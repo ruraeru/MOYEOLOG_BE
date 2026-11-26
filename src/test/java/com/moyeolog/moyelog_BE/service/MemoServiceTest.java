@@ -136,8 +136,8 @@ class MemoServiceTest {
     }
 
     @Test
-    @DisplayName("즐겨찾기 - 모임 메모는 추가할 수 없다(400)")
-    void toggleFavorite_GroupMemo_BadRequest() {
+    @DisplayName("즐겨찾기 - 모임 메모도 멤버면 추가할 수 있다")
+    void toggleFavorite_GroupMemo_Allowed() {
         UUID groupId = UUID.randomUUID();
         Memo groupMemo = Memo.builder().id(memoId).author(user).groupId(groupId).title("g").build();
         given(memoRepository.findById(memoId)).willReturn(Optional.of(groupMemo));
@@ -145,9 +145,10 @@ class MemoServiceTest {
         given(groupMemberRepository.findByUser(user)).willReturn(List.of(membership(groupId, user)));
         given(memoFavoriteRepository.existsByUser_IdAndMemo_Id(userId, memoId)).willReturn(false);
 
-        assertThatThrownBy(() -> memoService.toggleFavorite(userId, memoId))
-                .isInstanceOf(com.moyeolog.moyelog_BE.exception.BadRequestException.class);
-        verify(memoFavoriteRepository, never()).save(any(MemoFavorite.class));
+        MemoResponse response = memoService.toggleFavorite(userId, memoId);
+
+        assertThat(response.getIsFavorite()).isTrue();
+        verify(memoFavoriteRepository).save(any(MemoFavorite.class));
     }
 
     @Test
